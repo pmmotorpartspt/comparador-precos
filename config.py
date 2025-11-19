@@ -4,24 +4,22 @@ Comparador v4 - Configurações Centralizadas
 Todos os paths, timeouts e constantes num só lugar
 """
 from pathlib import Path
+import os
 
 # ============================================================================
-# PATHS - Alterar aqui se mudares de pasta
+# PATHS - Detecta ambiente automaticamente
 # ============================================================================
-# Detectar se está em Streamlit Cloud ou local
-import os
 if os.path.exists("/mount"):  # Streamlit Cloud
     BASE_DIR = Path("/tmp/comparador")
-else:  # Local
+else:  # Local Windows
     BASE_DIR = Path(r"C:\PMprecos")
 
-# Criar diretórios se não existem
-BASE_DIR.mkdir(parents=True, exist_ok=True)
 FEED_PATH = BASE_DIR / "feed.xml"
 CACHE_DIR = BASE_DIR / "cache"
 OUTPUT_DIR = BASE_DIR / "output"
 
 # Garantir que pastas existem
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -59,8 +57,7 @@ CIRCUIT_BREAKER_THRESHOLD = 0.30  # 30% de falhas = ativar modo lento
 CACHE_ENABLED = True  # Pode ser desativado via CLI
 
 # TTL (Time To Live) - Expiração do cache
-# Produtos ENCONTRADOS: guardados 10 dias (preços mudam em campanhas)
-# Produtos NÃO ENCONTRADOS: guardados 4 dias (stock novo pode chegar)
+CACHE_TTL_HOURS = 240  # Para compatibilidade (10 dias = 240 horas)
 CACHE_TTL_FOUND_DAYS = 10       # Cache para produtos encontrados (em dias)
 CACHE_TTL_NOT_FOUND_DAYS = 4    # Cache para produtos não encontrados (em dias)
 

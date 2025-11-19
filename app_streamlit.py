@@ -21,7 +21,7 @@ st.set_page_config(
 # Imports do projeto
 from core.feed import parse_feed
 from core.excel import ExcelBuilder
-from core.selenium_utils import build_driver
+from selenium_utils_streamlit import build_driver
 
 from scrapers.wrs import WRSScraper
 from scrapers.omniaracing import OmniaRacingScraper

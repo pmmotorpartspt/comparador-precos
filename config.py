@@ -8,7 +8,15 @@ from pathlib import Path
 # ============================================================================
 # PATHS - Alterar aqui se mudares de pasta
 # ============================================================================
-BASE_DIR = Path(r"C:\PMprecos")
+# Detectar se está em Streamlit Cloud ou local
+import os
+if os.path.exists("/mount"):  # Streamlit Cloud
+    BASE_DIR = Path("/tmp/comparador")
+else:  # Local
+    BASE_DIR = Path(r"C:\PMprecos")
+
+# Criar diretórios se não existem
+BASE_DIR.mkdir(parents=True, exist_ok=True)
 FEED_PATH = BASE_DIR / "feed.xml"
 CACHE_DIR = BASE_DIR / "cache"
 OUTPUT_DIR = BASE_DIR / "output"

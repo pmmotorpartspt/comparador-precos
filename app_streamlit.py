@@ -21,7 +21,7 @@ st.set_page_config(
 # Imports do projeto
 from core.feed import parse_feed
 from core.excel import ExcelBuilder
-from selenium_utils_streamlit import build_driver
+from core.selenium_utils import build_driver
 
 from scrapers.wrs import WRSScraper
 from scrapers.omniaracing import OmniaRacingScraper
@@ -151,8 +151,10 @@ if uploaded_file is not None:
                         progress_bar.progress(progress)
                         status_text.text(f"{idx + 1}/{len(products)}: {product.title[:50]}...")
                         
+                        # ✅ CORRIGIDO: Adicionado ref_norm
                         result = scraper.search_with_cache(
                             driver=driver,
+                            ref_norm=product.ref_norm,
                             ref_parts=product.ref_parts,
                             ref_raw=product.ref_raw,
                             use_cache=use_cache

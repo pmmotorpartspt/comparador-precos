@@ -2,6 +2,7 @@
 """
 core/selenium_utils.py
 Utilitários Selenium partilhados: driver, throttling, circuit breaker.
+VERSÃO OTIMIZADA PARA STREAMLIT CLOUD
 """
 import time
 import random
@@ -112,6 +113,7 @@ def get_rate_limiting_stats() -> dict:
 def build_driver(headless: bool = HEADLESS) -> webdriver.Chrome:
     """
     Cria instância do Chrome WebDriver com configurações otimizadas.
+    VERSÃO OTIMIZADA PARA STREAMLIT CLOUD
     
     Args:
         headless: Se True, Chrome invisível. Se False, Chrome visível.
@@ -121,7 +123,7 @@ def build_driver(headless: bool = HEADLESS) -> webdriver.Chrome:
     """
     opts = Options()
     
-    # Headless
+    # Headless (sempre True em produção cloud)
     if headless:
         opts.add_argument("--headless=new")
     
@@ -137,17 +139,39 @@ def build_driver(headless: bool = HEADLESS) -> webdriver.Chrome:
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
     
-    # Service (gerencia chromedriver automaticamente)
-    service = Service(ChromeDriverManager().install())
+    # ✅ CORRIGIDO: Service com tratamento de erro para cloud
+    try:
+        # Tentar com ChromeDriverManager (funciona local e alguns clouds)
+        service = Service(ChromeDriverManager().install())
+    except Exception as e:
+        # Fallback: tentar sem especificar service (usa chromedriver do PATH)
+        print(f"⚠️  ChromeDriverManager falhou ({e}), usando chromedriver do sistema")
+        service = None
     
     # Criar driver
-    driver = webdriver.Chrome(service=service, options=opts)
+    try:
+        if service:
+            driver = webdriver.Chrome(service=service, options=opts)
+        else:
+            driver = webdriver.Chrome(options=opts)
+    except Exception as e:
+        # Último fallback: tentar com options mínimas
+        print(f"⚠️  Tentativa com service falhou, usando configuração básica")
+        opts_basic = Options()
+        opts_basic.add_argument("--headless=new")
+        opts_basic.add_argument("--no-sandbox")
+        opts_basic.add_argument("--disable-dev-shm-usage")
+        driver = webdriver.Chrome(options=opts_basic)
+    
     driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     
     # Script anti-detecção
-    driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
+    try:
+        driver.execute_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+    except Exception:
+        pass  # Não crítico se falhar
     
     return driver
 

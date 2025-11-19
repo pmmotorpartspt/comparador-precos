@@ -1,0 +1,340 @@
+# -*- coding: utf-8 -*-
+"""
+scrapers/mmgracingstore.py
+Scraper para MMG Racing Store (mmgracingstore.com)
+
+Site PrestaShop com busca tipo dropdown dinâmico.
+Estratégia:
+1. URL direta de pesquisa: /pt/pesquisa?search_query={ref}
+2. Extrair produtos dos resultados (divs com class="dfd-card")
+3. Visitar cada produto, validar SKU e extrair preço
+"""
+import re
+import time
+from typing import Optional, List, Dict
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core.validation import validate_product_match
+from core.selenium_utils import get_page_html, try_accept_cookies
+from config import STORE_URLS
+from .base import BaseScraper, SearchResult, extract_price_from_html, parse_price_to_float
+
+
+class MMGRacingStoreScraper(BaseScraper):
+    """Scraper para MMG Racing Store"""
+    
+    def __init__(self):
+        super().__init__(
+            name="mmgracingstore",
+            base_url=STORE_URLS["mmgracingstore"]
+        )
+    
+    def search_product(self, driver: webdriver.Chrome, 
+                      ref_parts: List[str],
+                      ref_raw: str = "") -> Optional[SearchResult]:
+        """
+        Busca produto na MMG Racing Store.
+        
+        Args:
+            driver: WebDriver Selenium
+            ref_parts: Partes normalizadas (para validação)
+            ref_raw: Referência original (para pesquisar com hífens)
+            
+        Returns:
+            SearchResult se encontrado, None caso contrário
+        """
+        # Usar ref_raw se disponível (mantém hífens), senão juntar ref_parts
+        if ref_raw:
+            ref_query = ref_raw
+        else:
+            ref_query = "".join(ref_parts)
+        
+        print(f"[MMG] Procurando: {ref_query}")
+        
+        # Abrir página de resultados
+        success = self._open_search_results(driver, ref_query)
+        if not success:
+            print(f"[MMG] ❌ Falha ao abrir página de resultados")
+            return None
+        
+        # Extrair links de produtos
+        product_links = self._extract_product_links(driver)
+        
+        if not product_links:
+            print(f"[MMG] ⚠️  Nenhum produto encontrado")
+            return None
+        
+        print(f"[MMG] Encontrados {len(product_links)} produto(s)")
+        
+        # Visitar cada link até encontrar match válido
+        for idx, url in enumerate(product_links[:10], 1):  # Máximo 10
+            print(f"[MMG] [{idx}] Analisando: {url}")
+            
+            prod_html = get_page_html(driver, url)
+            if not prod_html:
+                print(f"[MMG]     ❌ Falha ao carregar página")
+                continue
+            
+            # Extrair referência da página
+            page_ref = self._extract_reference(prod_html)
+            
+            # Extrair preço
+            price_text = extract_price_from_html(prod_html)
+            
+            if not price_text:
+                print(f"[MMG]     ⚠️  Preço não encontrado")
+                continue
+            
+            print(f"[MMG]     💰 Preço: {price_text}")
+            
+            # Extrair identificadores para validação
+            identifiers = self._extract_identifiers(prod_html, page_ref)
+            
+            # Validar match
+            soup = BeautifulSoup(prod_html, "lxml")
+            full_text = soup.get_text(" ", strip=True)
+            
+            validation = validate_product_match(
+                our_parts=ref_parts,
+                page_identifiers=identifiers,
+                page_url=url,
+                page_text=full_text
+            )
+            
+            print(f"[MMG]     {'✅' if validation.is_valid else '❌'} Validação: {validation.confidence:.2f} - {validation.match_type}")
+            
+            if validation.is_valid:
+                return SearchResult(
+                    url=url,
+                    price_text=price_text,
+                    price_num=parse_price_to_float(price_text),
+                    validation=validation
+                )
+        
+        print(f"[MMG] ❌ Nenhum produto válido encontrado")
+        return None
+    
+    def _open_search_results(self, driver: webdriver.Chrome, query: str) -> bool:
+        """
+        Abre página de resultados de busca.
+        
+        URL pattern: https://mmgracingstore.com/pt/pesquisa?search_query=71971PK
+        
+        Args:
+            driver: WebDriver
+            query: Query de busca
+            
+        Returns:
+            True se sucesso, False caso contrário
+        """
+        try:
+            # URL de busca (língua portuguesa)
+            search_url = f"{self.base_url}pt/pesquisa?search_query={query}"
+            driver.get(search_url)
+            
+            # Aceitar cookies se aparecerem
+            try_accept_cookies(driver)
+            
+            # Esperar um pouco para o dropdown carregar (é dinâmico)
+            time.sleep(2)
+            
+            # Esperar pela página carregar (produtos ou mensagem "sem resultados")
+            WebDriverWait(driver, 10).until(
+                lambda d: (
+                    len(d.find_elements(By.CSS_SELECTOR, ".dfd-card")) > 0 or
+                    len(d.find_elements(By.CSS_SELECTOR, ".product-miniature")) > 0 or
+                    "nenhum" in d.page_source.lower() or
+                    "resultados" in d.page_source.lower()
+                )
+            )
+            
+            return True
+        
+        except Exception as e:
+            print(f"[MMG] ❌ Erro ao abrir resultados: {e}")
+            return False
+    
+    def _extract_product_links(self, driver: webdriver.Chrome) -> List[str]:
+        """
+        Extrai links de produtos da página de resultados.
+        
+        Tenta:
+        1. Divs .dfd-card (do dropdown dinâmico)
+        2. Divs .product-miniature (resultados normais PrestaShop)
+        
+        Args:
+            driver: WebDriver
+            
+        Returns:
+            Lista de URLs (sem duplicados)
+        """
+        links = []
+        seen = set()
+        
+        try:
+            # Método 1: Cards do dropdown (classe dfd-card)
+            cards = driver.find_elements(By.CSS_SELECTOR, ".dfd-card")
+            
+            for card in cards:
+                try:
+                    # Procurar link dentro do card
+                    link_elem = card.find_element(By.CSS_SELECTOR, "a")
+                    href = link_elem.get_attribute("href")
+                    
+                    if href and href not in seen:
+                        seen.add(href)
+                        links.append(href)
+                
+                except Exception:
+                    continue
+            
+            # Método 2: Produtos normais PrestaShop (fallback)
+            if not links:
+                products = driver.find_elements(By.CSS_SELECTOR, ".product-miniature")
+                
+                for product in products:
+                    try:
+                        link_elem = product.find_element(By.CSS_SELECTOR, "a.product-thumbnail, h3 a, h2 a")
+                        href = link_elem.get_attribute("href")
+                        
+                        if href and href not in seen:
+                            seen.add(href)
+                            links.append(href)
+                    
+                    except Exception:
+                        continue
+        
+        except Exception as e:
+            print(f"[MMG] ⚠️  Erro ao extrair links: {e}")
+        
+        return links
+    
+    def _extract_reference(self, html: str) -> Optional[str]:
+        """
+        Extrai referência da página do produto.
+        
+        Padrão MMG Racing Store:
+        - <span itemprop="sku">*ATH71971PK</span>
+        - <meta itemprop="MPN" content="*ATH71971PK">
+        
+        Args:
+            html: HTML da página
+            
+        Returns:
+            Referência ou None
+        """
+        soup = BeautifulSoup(html, "lxml")
+        
+        # Método 1: itemprop="sku"
+        sku_tag = soup.find(attrs={"itemprop": "sku"})
+        if sku_tag:
+            ref = sku_tag.get_text(strip=True)
+            if ref:
+                # Remover prefixo * se existir
+                ref = ref.lstrip("*")
+                return ref.upper()
+        
+        # Método 2: itemprop="MPN"
+        mpn_tag = soup.find(attrs={"itemprop": "MPN"})
+        if mpn_tag:
+            ref = mpn_tag.get("content", "")
+            if ref:
+                ref = ref.lstrip("*")
+                return ref.upper()
+        
+        # Método 3: Meta tag product:retailer_item_id
+        meta = soup.find("meta", attrs={"name": "product:retailer_item_id"})
+        if meta:
+            ref = meta.get("content", "")
+            if ref:
+                ref = ref.lstrip("*")
+                return ref.upper()
+        
+        return None
+    
+    def _extract_identifiers(self, html: str, page_ref: Optional[str] = None) -> Dict[str, List[str]]:
+        """
+        Extrai identificadores da página (códigos, SKU, referência).
+        
+        Args:
+            html: HTML da página
+            page_ref: Referência extraída da página (se disponível)
+            
+        Returns:
+            Dict {"sku": [...], "codes": [...]}
+        """
+        soup = BeautifulSoup(html, "lxml")
+        ids = {"sku": [], "codes": []}
+        
+        # 1. Referência da página (prioritário)
+        if page_ref:
+            ids["sku"].append(page_ref)
+            ids["codes"].append(page_ref)
+            # Também adicionar sem prefixo se tiver
+            if page_ref.startswith("ATH"):
+                clean_ref = page_ref[3:]  # Remove ATH
+                ids["codes"].append(clean_ref)
+        
+        # 2. Título da página
+        title_tag = soup.find("title")
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+            # Extrair códigos alfanuméricos do título
+            pattern = re.compile(r"\b([A-Z0-9][\w\-\.]{2,})\b", re.I)
+            for match in pattern.finditer(title):
+                code = match.group(1).upper()
+                from core.normalization import norm_token
+                if len(norm_token(code)) >= 3:
+                    ids["codes"].append(code)
+        
+        # 3. Meta description
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        if meta_desc:
+            content = meta_desc.get("content", "")
+            pattern = re.compile(r"\b([A-Z0-9][\w\-\.]{3,})\b", re.I)
+            for match in pattern.finditer(content):
+                code = match.group(1).upper()
+                from core.normalization import norm_token
+                if len(norm_token(code)) >= 3:
+                    ids["codes"].append(code)
+        
+        # 4. JSON-LD (se existir)
+        import json
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+                
+                def scan(obj):
+                    if isinstance(obj, dict):
+                        if obj.get("@type") == "Product":
+                            # SKU/MPN
+                            for key in ["sku", "mpn"]:
+                                value = obj.get(key)
+                                if value and isinstance(value, str):
+                                    clean = value.lstrip("*")
+                                    ids["sku"].append(clean.upper())
+                                    ids["codes"].append(clean.upper())
+                        
+                        # Recursão
+                        for value in obj.values():
+                            scan(value)
+                    
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            scan(item)
+                
+                scan(data)
+            
+            except Exception:
+                continue
+        
+        return ids

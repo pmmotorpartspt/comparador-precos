@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+<channel>
+    <title>Exemplo Feed Produtos</title>
+    <description>Exemplo de estrutura de feed.xml</description>
+    
+    <!-- EXEMPLO 1: Ref simples -->
+    <item>
+        <g:id>001</g:id>
+        <g:title>Escape Arrow Pro Race P-HF1595 CFMoto 450MT</g:title>
+        <g:link>https://tua-loja.com/escape-arrow-phf1595</g:link>
+        <g:price>331.50 EUR</g:price>
+        <g:description>
+            Escape completo Arrow Pro Race para CFMoto 450MT.
+            Fabricado em titânio com qualidade superior.
+            Ref Fabricante: P-HF1595
+            Homologado para circulação na estrada.
+        </g:description>
+    </item>
+    
+    <!-- EXEMPLO 2: Ref com ponto -->
+    <item>
+        <g:id>002</g:id>
+        <g:title>Filtro Óleo Hiflo H.085.LR1X</g:title>
+        <g:link>https://tua-loja.com/filtro-h085lr1x</g:link>
+        <g:price>12.50 EUR</g:price>
+        <g:description>
+            Filtro de óleo de alta performance.
+            Compatível com várias motos.
+            Ref. Fabricante: H.085.LR1X
+            Marca: Hiflo Filtro
+        </g:description>
+    </item>
+    
+    <!-- EXEMPLO 3: Ref composta (múltiplas refs) -->
+    <item>
+        <g:id>003</g:id>
+        <g:title>Kit Travão Brembo Completo</g:title>
+        <g:link>https://tua-loja.com/kit-travao-brembo</g:link>
+        <g:price>450.00 EUR</g:price>
+        <g:description>
+            Kit completo de travão Brembo.
+            Inclui pinças, discos e pastilhas.
+            Ref do Fabricante: 110A26310+107B51210
+            Alta performance para competição.
+        </g:description>
+    </item>
+    
+    <!-- EXEMPLO 4: Sem stock/preço (será ignorado) -->
+    <item>
+        <g:id>004</g:id>
+        <g:title>Produto Sem Stock</g:title>
+        <g:link>https://tua-loja.com/sem-stock</g:link>
+        <g:price></g:price>
+        <g:description>
+            Este produto não tem preço definido.
+            Ref Fabricante: XYZ999
+            Será ignorado pelo sistema.
+        </g:description>
+    </item>
+    
+</channel>
+</rss>

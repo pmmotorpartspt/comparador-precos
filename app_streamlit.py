@@ -223,10 +223,7 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             st.dataframe(
                 df,
                 use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "URL": st.column_config.LinkColumn("URL", display_text="Ver Produto")
-                }
+                hide_index=True
             )
             
             # Estatísticas rápidas

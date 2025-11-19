@@ -2,7 +2,9 @@
 """
 core/cache.py
 Sistema de cache universal para todas as lojas.
-Cada loja tem seu próprio ficheiro JSON, TTL de 24h.
+Cada loja tem seu próprio ficheiro JSON, TTL diferenciado por tipo.
+
+VERSÃO 4.7: TTL adaptativo (encontrados vs não encontrados)
 """
 import json
 from pathlib import Path
@@ -10,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, asdict
 
-from config import CACHE_DIR, CACHE_TTL_HOURS
+from config import CACHE_DIR, CACHE_TTL_FOUND_DAYS, CACHE_TTL_NOT_FOUND_DAYS
 
 
 @dataclass
@@ -32,12 +34,25 @@ class CacheEntry:
         """Cria CacheEntry a partir de dicionário"""
         return cls(**data)
     
-    def is_expired(self, ttl_hours: int = CACHE_TTL_HOURS) -> bool:
-        """Verifica se entrada expirou"""
+    def is_expired(self) -> bool:
+        """
+        Verifica se entrada expirou.
+        TTL adaptativo: produtos encontrados vs não encontrados
+        """
         try:
             cached_time = datetime.fromisoformat(self.timestamp)
             age = datetime.utcnow() - cached_time
-            return age > timedelta(hours=ttl_hours)
+            
+            # TTL diferente baseado se produto foi encontrado ou não
+            if self.url:
+                # Produto encontrado: TTL mais longo (preços mudam devagar)
+                max_age = timedelta(days=CACHE_TTL_FOUND_DAYS)
+            else:
+                # Produto não encontrado: TTL mais curto (stock pode chegar)
+                max_age = timedelta(days=CACHE_TTL_NOT_FOUND_DAYS)
+            
+            return age > max_age
+        
         except Exception:
             return True  # Se erro ao parsear data, considerar expirado
 
@@ -117,7 +132,7 @@ class StoreCache:
         if entry is None:
             return None
         
-        # Verificar se expirou
+        # Verificar se expirou (usa TTL adaptativo)
         if entry.is_expired():
             # Remover entrada expirada
             del self._cache[ref_norm]
@@ -151,59 +166,70 @@ class StoreCache:
         self._dirty = True
     
     def clear(self) -> None:
-        """Limpa todo o cache (útil para --refresh)"""
+        """Limpa todo o cache"""
         self._cache = {}
         self._dirty = True
     
-    def clear_expired(self) -> int:
+    def remove_expired(self) -> int:
         """
-        Remove entradas expiradas do cache.
+        Remove todas as entradas expiradas.
         
         Returns:
             Número de entradas removidas
         """
-        expired_keys = [
-            ref for ref, entry in self._cache.items()
+        expired_refs = [
+            ref for ref, entry in self._cache.items() 
             if entry.is_expired()
         ]
         
-        for key in expired_keys:
-            del self._cache[key]
+        for ref in expired_refs:
+            del self._cache[ref]
         
-        if expired_keys:
+        if expired_refs:
             self._dirty = True
         
-        return len(expired_keys)
+        return len(expired_refs)
     
-    def stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> Dict[str, Any]:
         """
         Retorna estatísticas do cache.
         
         Returns:
-            Dict com: total, found (com URL), not_found (sem URL), expired
+            Dict com estatísticas (total, encontrados, não encontrados, etc)
         """
         total = len(self._cache)
-        found = sum(1 for e in self._cache.values() if e.url is not None)
+        found = sum(1 for entry in self._cache.values() if entry.url)
         not_found = total - found
         
-        # Contar expirados (sem remover)
-        expired = sum(1 for e in self._cache.values() if e.is_expired())
+        # Calcular idade média
+        if total > 0:
+            try:
+                ages = []
+                for entry in self._cache.values():
+                    cached_time = datetime.fromisoformat(entry.timestamp)
+                    age_hours = (datetime.utcnow() - cached_time).total_seconds() / 3600
+                    ages.append(age_hours)
+                avg_age_hours = sum(ages) / len(ages)
+            except Exception:
+                avg_age_hours = 0
+        else:
+            avg_age_hours = 0
         
         return {
-            "total": total,
+            "store": self.store_name,
+            "total_entries": total,
             "found": found,
             "not_found": not_found,
-            "expired": expired,
-            "store": self.store_name
+            "avg_age_hours": avg_age_hours,
+            "cache_file": str(self.cache_file),
         }
     
-    def __enter__(self):
-        """Context manager: permite usar 'with cache: ...'"""
-        return self
+    def __len__(self) -> int:
+        """Número de entradas no cache"""
+        return len(self._cache)
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager: salva automaticamente ao sair"""
-        self.save()
+    def __repr__(self) -> str:
+        return f"StoreCache(store={self.store_name}, entries={len(self)})"
 
 
 # ============================================================================
@@ -213,28 +239,36 @@ if __name__ == "__main__":
     print("=== Teste de Cache ===\n")
     
     # Criar cache de teste
-    cache = StoreCache("test_store")
+    cache = StoreCache("teste")
     
-    # Adicionar entrada
-    cache.put("H085LR1X", "https://example.com/product", "€ 365.50", 365.50, 1.0)
-    print("Entrada adicionada")
+    # Adicionar entradas
+    cache.put(
+        ref_norm="ABC123",
+        url="https://example.com/abc123",
+        price_text="€ 45.99",
+        price_num=45.99,
+        confidence=0.95
+    )
     
-    # Buscar entrada
-    entry = cache.get("H085LR1X")
-    if entry:
-        print(f"Entrada encontrada: URL={entry.url}, Preço={entry.price_text}")
-    
-    # Estatísticas
-    stats = cache.stats()
-    print(f"\nEstatísticas: {stats}")
+    cache.put(
+        ref_norm="XYZ789",
+        url=None,  # Não encontrado
+        price_text=None,
+        price_num=None,
+        confidence=0.0
+    )
     
     # Salvar
     cache.save()
-    print("\nCache salvo!")
+    print(f"✅ Cache salvo: {cache.cache_file}")
     
-    # Limpar ficheiro de teste
-    import os
-    test_file = CACHE_DIR / "test_store_cache.json"
-    if test_file.exists():
-        os.remove(test_file)
-        print("Ficheiro de teste removido")
+    # Buscar
+    entry = cache.get("ABC123")
+    if entry:
+        print(f"✅ Encontrado: {entry.ref_norm} → {entry.price_text}")
+    
+    # Estatísticas
+    stats = cache.get_stats()
+    print(f"\n📊 Estatísticas:")
+    for key, value in stats.items():
+        print(f"  {key}: {value}")

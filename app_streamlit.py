@@ -164,14 +164,14 @@ if modo == "🔍 Busca Rápida (1 Ref)":
                             price_diff = ""
                             if your_price > 0:
                                 try:
-                                    diff = float(result.price) - your_price
+                                    diff = float(result.price_num) - your_price
                                     price_diff = f"{diff:+.2f}€"
                                 except:
                                     price_diff = "—"
                             
                             results.append({
                                 "Loja": store_name,
-                                "Preço": f"{result.price:.2f}€",
+                                "Preço": f"{result.price_num:.2f}€",
                                 "Diferença": price_diff,
                                 "Confiança": result.confidence,
                                 "URL": result.url

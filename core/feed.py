@@ -111,7 +111,7 @@ def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List[FeedP
         </item>
     
     Args:
-        feed_path: Caminho para o ficheiro XML
+        feed_path: Caminho para o ficheiro XML (Path ou str)
         max_products: Limite de produtos (0 = sem limite, útil para testes)
         
     Returns:
@@ -121,6 +121,10 @@ def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List[FeedP
         FileNotFoundError: Se feed não existir
         Exception: Se erro ao parsear XML
     """
+    # Converter para Path se for string
+    if isinstance(feed_path, str):
+        feed_path = Path(feed_path)
+    
     if not feed_path.exists():
         raise FileNotFoundError(f"Feed não encontrado: {feed_path}")
     

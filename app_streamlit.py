@@ -8,6 +8,7 @@ Interface web com:
 
 import streamlit as st
 import io
+import base64
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -105,11 +106,19 @@ with st.sidebar:
     headless = st.checkbox("Modo invisível", value=True)
 
 # ============================================================================
-# MODO 1: BUSCA RÁPIDA (1 REF)
+# MODO 1: BUSCA RÁPIDA (1 REF) - COM SESSION STATE + AUTO-DOWNLOAD
 # ============================================================================
 
 if modo == "🔍 Busca Rápida (1 Ref)":
     st.header("🔍 Busca Rápida de Referência")
+    
+    # Inicializar session state
+    if 'busca_resultados' not in st.session_state:
+        st.session_state.busca_resultados = None
+    if 'busca_excel' not in st.session_state:
+        st.session_state.busca_excel = None
+    if 'busca_filename' not in st.session_state:
+        st.session_state.busca_filename = None
     
     col1, col2 = st.columns([3, 1])
     
@@ -212,61 +221,116 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             driver.quit()
             progress_bar.empty()
             
-            # Mostrar resultados
-            st.divider()
-            st.subheader("📊 Resultados")
+            # 💾 GUARDAR EM SESSION STATE
+            st.session_state.busca_resultados = results
+            st.session_state.busca_ref = ref_input.strip()
+            st.session_state.busca_ref_norm = ref_norm
+            st.session_state.busca_your_price = your_price
+            st.session_state.busca_stores = selected_stores
             
-            # Criar DataFrame
-            df = pd.DataFrame(results)
-            
-            # Mostrar tabela
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Estatísticas rápidas
+            # Gerar Excel imediatamente
             found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Lojas Pesquisadas", len(scrapers))
-            with col2:
-                st.metric("Encontrado em", found_count)
-            with col3:
-                if found_count > 0:
-                    st.metric("Taxa Sucesso", f"{found_count/len(scrapers)*100:.0f}%")
-            
-            # 🆕 DOWNLOAD EXCEL
-            st.divider()
-            
             if found_count > 0:
-                with st.spinner("📊 A gerar Excel..."):
-                    from core.excel import create_single_ref_excel
-                    
-                    excel_buffer = create_single_ref_excel(
-                        ref=ref_input.strip(),
-                        ref_norm=ref_norm,
-                        your_price=your_price,
-                        store_names=selected_stores,
-                        results=results
-                    )
-                    
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"busca_{ref_norm}_{timestamp}.xlsx"
-                    
-                    st.download_button(
-                        label="📥 Download Excel",
-                        data=excel_buffer,
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary",
-                        use_container_width=True,
-                        help="Descarrega resultado em Excel (mesma formatação que Comparação Completa)"
-                    )
-            else:
-                st.info("ℹ️ Nenhum produto encontrado. Download Excel não disponível.")
+                from core.excel import create_single_ref_excel
+                
+                excel_buffer = create_single_ref_excel(
+                    ref=ref_input.strip(),
+                    ref_norm=ref_norm,
+                    your_price=your_price,
+                    store_names=selected_stores,
+                    results=results
+                )
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"busca_{ref_norm}_{timestamp}.xlsx"
+                
+                # Guardar em session state
+                st.session_state.busca_excel = excel_buffer.getvalue()
+                st.session_state.busca_filename = filename
+    
+    # Mostrar resultados (de session state ou recém-processados)
+    if st.session_state.busca_resultados is not None:
+        results = st.session_state.busca_resultados
+        
+        st.divider()
+        st.subheader("📊 Resultados")
+        
+        # Criar DataFrame
+        df = pd.DataFrame(results)
+        
+        # Mostrar tabela
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Estatísticas rápidas
+        found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Lojas Pesquisadas", len(results))
+        with col2:
+            st.metric("Encontrado em", found_count)
+        with col3:
+            if found_count > 0:
+                st.metric("Taxa Sucesso", f"{found_count/len(results)*100:.0f}%")
+        
+        # 🆕 AUTO-DOWNLOAD + BOTÃO MANUAL
+        st.divider()
+        
+        if found_count > 0 and st.session_state.busca_excel is not None:
+            
+            # AUTO-DOWNLOAD via HTML/JS
+            excel_b64 = base64.b64encode(st.session_state.busca_excel).decode()
+            
+            html_download = f"""
+            <script>
+            // Auto-download quando página carrega
+            window.onload = function() {{
+                // Só faz download se não fez ainda (evita repetir)
+                if (!sessionStorage.getItem('downloaded_{st.session_state.busca_filename}')) {{
+                    const link = document.createElement('a');
+                    link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}';
+                    link.download = '{st.session_state.busca_filename}';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    sessionStorage.setItem('downloaded_{st.session_state.busca_filename}', 'true');
+                }}
+            }};
+            </script>
+            <div style='padding: 1rem; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 5px; margin-bottom: 1rem;'>
+                <p style='margin: 0; color: #155724;'>
+                    ✅ <strong>Excel a descarregar automaticamente...</strong><br>
+                    <small>Se não descarregou, usa o botão abaixo</small>
+                </p>
+            </div>
+            """
+            
+            st.markdown(html_download, unsafe_allow_html=True)
+            
+            # Botão manual (fallback)
+            st.download_button(
+                label="📥 Download Manual (se auto falhou)",
+                data=st.session_state.busca_excel,
+                file_name=st.session_state.busca_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                help="Usa este se download automático não funcionou"
+            )
+        else:
+            st.info("ℹ️ Nenhum produto encontrado. Download Excel não disponível.")
+        
+        # Botão limpar resultados
+        if st.button("🔄 Nova Busca", use_container_width=True):
+            st.session_state.busca_resultados = None
+            st.session_state.busca_excel = None
+            st.session_state.busca_filename = None
+            st.rerun()
+
 
 # ============================================================================
 # MODO 2: COMPARAÇÃO COMPLETA (FEED XML) - REF-POR-REF

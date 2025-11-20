@@ -237,21 +237,43 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             with col3:
                 if found_count > 0:
                     st.metric("Taxa Sucesso", f"{found_count/len(scrapers)*100:.0f}%")
+            
+            # 🆕 DOWNLOAD EXCEL
+            st.divider()
+            
+            if found_count > 0:
+                with st.spinner("📊 A gerar Excel..."):
+                    from core.excel import create_single_ref_excel
+                    
+                    excel_buffer = create_single_ref_excel(
+                        ref=ref_input.strip(),
+                        ref_norm=ref_norm,
+                        your_price=your_price,
+                        store_names=selected_stores,
+                        results=results
+                    )
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"busca_{ref_norm}_{timestamp}.xlsx"
+                    
+                    st.download_button(
+                        label="📥 Download Excel",
+                        data=excel_buffer,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        type="primary",
+                        use_container_width=True,
+                        help="Descarrega resultado em Excel (mesma formatação que Comparação Completa)"
+                    )
+            else:
+                st.info("ℹ️ Nenhum produto encontrado. Download Excel não disponível.")
 
 # ============================================================================
-# MODO 2: COMPARAÇÃO COMPLETA (FEED XML)
+# MODO 2: COMPARAÇÃO COMPLETA (FEED XML) - REF-POR-REF
 # ============================================================================
 
 else:  # Modo Comparação Completa
     st.header("📁 Upload do Feed XML")
-    
-    max_products = st.number_input(
-        "Limitar produtos (0 = todos)",
-        min_value=0,
-        max_value=1000,
-        value=0,
-        help="Útil para testar com poucos produtos"
-    )
     
     uploaded_file = st.file_uploader(
         "Arrasta o ficheiro feed.xml aqui",
@@ -261,137 +283,247 @@ else:  # Modo Comparação Completa
     if uploaded_file is not None:
         st.success(f"✅ Ficheiro: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
         
-        if st.button("🚀 Comparar Preços", type="primary", use_container_width=True):
+        try:
+            # Guardar ficheiro temporário
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xml') as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                tmp_path = Path(tmp_file.name)
             
-            if not selected_stores:
-                st.error("⚠️ Seleciona pelo menos uma loja!")
-            else:
-                try:
-                    # Guardar ficheiro temporário
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.xml') as tmp_file:
-                        tmp_file.write(uploaded_file.getvalue())
-                        tmp_path = Path(tmp_file.name)
-                    
-                    # Parse feed
-                    with st.spinner("📖 A ler feed XML..."):
-                        products = parse_feed(tmp_path)
+            # Parse feed
+            with st.spinner("📖 A ler feed XML..."):
+                all_products = parse_feed(tmp_path)
+                
+                if not all_products:
+                    st.error("❌ Nenhum produto válido!")
+                    st.stop()
+                
+                st.success(f"✅ {len(all_products)} produtos encontrados no feed")
+            
+            # 🆕 SELETOR DE REFS
+            st.divider()
+            st.subheader("📋 Selecionar Produtos")
+            
+            st.warning(f"⚠️ **Limite:** 10 refs por execução (evitar timeout ~10-15 min)")
+            
+            # Opções de seleção
+            ref_selection = st.radio(
+                "Produtos a processar:",
+                [
+                    "Primeiros 10",
+                    "Refs 11-20",
+                    "Refs 21-30",
+                    "Refs 31-40",
+                    "Custom (escolher refs específicas)"
+                ],
+                help="Escolhe quais produtos processar (máximo 10 de cada vez)"
+            )
+            
+            # Determinar produtos selecionados
+            products = []
+            
+            if ref_selection == "Primeiros 10":
+                products = all_products[:10]
+            elif ref_selection == "Refs 11-20":
+                products = all_products[10:20]
+            elif ref_selection == "Refs 21-30":
+                products = all_products[20:30]
+            elif ref_selection == "Refs 31-40":
+                products = all_products[30:40]
+            elif ref_selection == "Custom (escolher refs específicas)":
+                # Input manual
+                st.info("💡 **Exemplo:** 1,5,10,25,33 (usa números de 1 a " + str(len(all_products)) + ")")
+                custom_input = st.text_input(
+                    "Números das refs (separados por vírgula):",
+                    placeholder="1,5,10,25,33"
+                )
+                
+                if custom_input.strip():
+                    try:
+                        # Parse dos números
+                        indices = [int(x.strip()) - 1 for x in custom_input.split(",")]
                         
-                        if not products:
-                            st.error("❌ Nenhum produto válido!")
+                        # Validar
+                        invalid = [i+1 for i in indices if i < 0 or i >= len(all_products)]
+                        if invalid:
+                            st.error(f"❌ Números inválidos: {invalid}")
                             st.stop()
                         
-                        st.success(f"✅ {len(products)} produtos encontrados")
-                    
-                    # Limitar
-                    if max_products > 0 and max_products < len(products):
-                        products = products[:max_products]
-                        st.info(f"ℹ️ Limitado a {max_products} produtos")
-                    
-                    # Criar driver
-                    with st.spinner("🌐 A iniciar navegador..."):
-                        driver = build_driver(headless=headless)
-                    
-                    # Criar scrapers
-                    scrapers = {}
-                    for store_name in selected_stores:
-                        scraper_class = AVAILABLE_SCRAPERS[store_name]
-                        scrapers[store_name.lower().replace(" ", "")] = scraper_class()
-                    
-                    # Processar lojas
-                    results_by_store = {}
-                    
-                    for store_display_name in selected_stores:
-                        store_key = store_display_name.lower().replace(" ", "")
-                        scraper = scrapers[store_key]
+                        if len(indices) > 10:
+                            st.error(f"❌ Máximo 10 refs! Tens {len(indices)}")
+                            st.stop()
                         
-                        st.subheader(f"🏪 {store_display_name}")
+                        # Selecionar produtos
+                        products = [all_products[i] for i in indices]
                         
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                    except ValueError:
+                        st.error("❌ Formato inválido! Usa números separados por vírgula (ex: 1,5,10)")
+                        st.stop()
+            
+            # Mostrar seleção
+            if products:
+                st.info(f"📌 **{len(products)} produtos selecionados** para processamento")
+                
+                with st.expander("🔍 Ver produtos selecionados"):
+                    for idx, p in enumerate(products, 1):
+                        st.text(f"{idx}. {p.ref_raw} - {p.title[:60]}")
+            else:
+                st.warning("⚠️ Escolhe refs custom ou usa outra opção")
+                st.stop()
+            
+            st.divider()
+            
+            # Botão iniciar
+            if st.button("🚀 Comparar Preços", type="primary", use_container_width=True):
+                
+                if not selected_stores:
+                    st.error("⚠️ Seleciona pelo menos uma loja!")
+                    st.stop()
+                
+                # Criar driver
+                with st.spinner("🌐 A iniciar navegador..."):
+                    driver = build_driver(headless=headless)
+                
+                # Criar scrapers
+                scrapers = {}
+                for store_name in selected_stores:
+                    scraper_class = AVAILABLE_SCRAPERS[store_name]
+                    scrapers[store_name.lower().replace(" ", "")] = scraper_class()
+                
+                # 🆕 PROCESSAR REF-POR-REF (não loja-por-loja)
+                st.divider()
+                st.header("⚙️ Processamento")
+                
+                # Criar Excel builder
+                builder = ExcelBuilder(list(scrapers.keys()))
+                builder._create_headers()
+                
+                # Progress containers
+                overall_progress = st.progress(0)
+                overall_status = st.empty()
+                
+                # Container para download parcial
+                download_container = st.empty()
+                
+                # Processar cada REF (loop externo)
+                for ref_idx, product in enumerate(products):
+                    
+                    # Update overall progress
+                    progress_pct = (ref_idx + 1) / len(products)
+                    overall_progress.progress(progress_pct)
+                    overall_status.info(f"📦 Produto {ref_idx + 1}/{len(products)}: **{product.ref_raw}** - {product.title[:50]}")
+                    
+                    # Container para progresso desta ref
+                    ref_progress = st.expander(f"🔍 Ref {ref_idx + 1}: {product.ref_raw}", expanded=(ref_idx == len(products) - 1))
+                    
+                    with ref_progress:
+                        store_progress_bar = st.progress(0)
+                        store_status = st.empty()
                         
-                        store_results = {}
+                        # Resultados desta ref em todas as lojas
+                        product_results = {}
                         
-                        for idx, product in enumerate(products):
-                            progress = (idx + 1) / len(products)
-                            progress_bar.progress(progress)
-                            status_text.text(f"{idx + 1}/{len(products)}: {product.title[:50]}...")
+                        # Processar cada LOJA para esta ref (loop interno)
+                        for store_idx, (store_key, scraper) in enumerate(scrapers.items()):
                             
-                            result = scraper.search_with_cache(
-                                driver=driver,
-                                ref_norm=product.ref_norm,
-                                ref_parts=product.ref_parts,
-                                ref_raw=product.ref_raw,
-                                use_cache=use_cache
+                            # Update progress
+                            store_pct = (store_idx + 1) / len(scrapers)
+                            store_progress_bar.progress(store_pct)
+                            
+                            # Nome display
+                            store_display = [k for k, v in AVAILABLE_SCRAPERS.items() if k.lower().replace(" ", "") == store_key][0]
+                            store_status.text(f"🏪 {store_display}... ({store_idx + 1}/{len(scrapers)})")
+                            
+                            try:
+                                result = scraper.search_with_cache(
+                                    driver=driver,
+                                    ref_norm=product.ref_norm,
+                                    ref_parts=product.ref_parts,
+                                    ref_raw=product.ref_raw,
+                                    use_cache=use_cache
+                                )
+                                
+                                if result:
+                                    product_results[store_key] = result.to_dict()
+                                else:
+                                    product_results[store_key] = None
+                                    
+                            except Exception as e:
+                                product_results[store_key] = None
+                                st.warning(f"⚠️ Erro em {store_display}: {str(e)[:50]}")
+                        
+                        store_status.success(f"✅ Ref completa! Encontrado em {sum(1 for r in product_results.values() if r)} lojas")
+                    
+                    # 🆕 CHECKPOINT: Adicionar produto ao Excel
+                    builder.add_product(product, product_results)
+                    
+                    # 🆕 DOWNLOAD PARCIAL sempre disponível
+                    if ref_idx >= 0:  # Sempre (mesmo após 1ª ref)
+                        partial_buffer = builder.to_buffer()
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"comparador_parcial_{ref_idx + 1}refs_{timestamp}.xlsx"
+                        
+                        with download_container.container():
+                            st.success(f"💾 **{ref_idx + 1}/{len(products)} refs processadas**")
+                            st.download_button(
+                                label=f"📥 Download Parcial ({ref_idx + 1}/{len(products)} refs)",
+                                data=partial_buffer,
+                                file_name=filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key=f"partial_{ref_idx}",
+                                use_container_width=True,
+                                help="Descarrega progresso atual (cada linha tem todas as lojas)"
                             )
-                            
-                            if result:
-                                store_results[product.ref_norm] = result.to_dict()
-                        
-                        # Stats
-                        stats = scraper.stats
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Buscas", stats['total_searches'])
-                        with col2:
-                            found = stats['found']
-                            total = stats['total_searches']
-                            st.metric("Encontrados", f"{found} ({found/total*100:.1f}%)" if total > 0 else "0")
-                        with col3:
-                            st.metric("Cache", stats['cache_hits'])
-                        
-                        results_by_store[store_key] = store_results
-                        st.divider()
-                    
-                    driver.quit()
-                    
-                    # Gerar Excel
-                    with st.spinner("📊 A gerar Excel..."):
-                        excel_buffer = io.BytesIO()
-                        
-                        # Criar Excel builder
-                        builder = ExcelBuilder(list(scrapers.keys()))
-                        
-                        # Adicionar produtos
-                        for product in products:
-                            results = {}
-                            for store_key in scrapers.keys():
-                                if product.ref_norm in results_by_store.get(store_key, {}):
-                                    results[store_key] = results_by_store[store_key][product.ref_norm]
-                            
-                            builder.add_product(product, results)
-                        
-                        # Salvar para stream
-                        builder.wb.save(excel_buffer)
-                        excel_buffer.seek(0)
-                    
-                    st.success("🎉 Comparação concluída!")
-                    
-                    # Download
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    filename = f"comparador_{timestamp}.xlsx"
-                    
-                    st.download_button(
-                        label="📥 Download Excel",
-                        data=excel_buffer,
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary",
-                        use_container_width=True
-                    )
-                    
-                    tmp_path.unlink()
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro: {e}")
-                    import traceback
-                    with st.expander("🔍 Detalhes"):
-                        st.code(traceback.format_exc())
+                
+                # Fechar driver
+                driver.quit()
+                
+                # 🎉 CONCLUSÃO
+                overall_progress.progress(1.0)
+                overall_status.success("🎉 **Comparação concluída!**")
+                
+                st.divider()
+                st.header("✅ Concluído!")
+                
+                # Stats finais
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Produtos Processados", len(products))
+                with col2:
+                    st.metric("Lojas Comparadas", len(scrapers))
+                with col3:
+                    total_searches = len(products) * len(scrapers)
+                    st.metric("Total Buscas", total_searches)
+                
+                # Download final
+                st.divider()
+                final_buffer = builder.to_buffer()
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                final_filename = f"comparador_{timestamp}.xlsx"
+                
+                st.download_button(
+                    label="📥 Download Excel Completo",
+                    data=final_buffer,
+                    file_name=final_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+                
+                # Cleanup
+                tmp_path.unlink()
+                
+        except Exception as e:
+            st.error(f"❌ Erro: {e}")
+            import traceback
+            with st.expander("🔍 Detalhes"):
+                st.code(traceback.format_exc())
 
 # Footer
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p><strong>Comparador de Preços v4.7</strong> | PM Motorparts</p>
-    <p style='font-size: 0.9rem;'>🔍 Busca Rápida | 📊 Análise Completa</p>
+    <p><strong>Comparador de Preços v4.8</strong> | PM Motorparts</p>
+    <p style='font-size: 0.9rem;'>🔍 Busca Rápida + Excel | 📊 Comparação ref-por-ref</p>
 </div>
 """, unsafe_allow_html=True)

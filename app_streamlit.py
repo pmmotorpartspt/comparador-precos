@@ -326,11 +326,79 @@ if modo == "🔍 Busca Rápida (1 Ref)":
 
 
 # ============================================================================
-# MODO 2: COMPARAÇÃO COMPLETA (FEED XML) - REF-POR-REF
+# MODO 2: COMPARAÇÃO COMPLETA (FEED XML) - REF-POR-REF + SESSION STATE
 # ============================================================================
 
 else:  # Modo Comparação Completa
     st.header("📁 Upload do Feed XML")
+    
+    # Inicializar session state
+    if 'comp_historico' not in st.session_state:
+        st.session_state.comp_historico = []
+    if 'comp_excel' not in st.session_state:
+        st.session_state.comp_excel = None
+    if 'comp_filename' not in st.session_state:
+        st.session_state.comp_filename = None
+    if 'comp_processando' not in st.session_state:
+        st.session_state.comp_processando = False
+    
+    # Mostrar histórico se existe
+    if st.session_state.comp_historico and not st.session_state.comp_processando:
+        st.divider()
+        st.success("✅ **Processamento Concluído!**")
+        
+        # Histórico
+        with st.expander("📝 Histórico do Processamento", expanded=True):
+            for item in st.session_state.comp_historico:
+                st.text(item)
+        
+        # Download com auto-download
+        if st.session_state.comp_excel:
+            st.divider()
+            
+            # AUTO-DOWNLOAD
+            excel_b64 = base64.b64encode(st.session_state.comp_excel).decode()
+            html_download = f"""
+            <script>
+            window.onload = function() {{
+                if (!sessionStorage.getItem('downloaded_{st.session_state.comp_filename}')) {{
+                    const link = document.createElement('a');
+                    link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}';
+                    link.download = '{st.session_state.comp_filename}';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    sessionStorage.setItem('downloaded_{st.session_state.comp_filename}', 'true');
+                }}
+            }};
+            </script>
+            <div style='padding: 1rem; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 5px; margin-bottom: 1rem;'>
+                <p style='margin: 0; color: #155724;'>
+                    ✅ <strong>Excel a descarregar automaticamente...</strong><br>
+                    <small>Se não descarregou, usa o botão abaixo</small>
+                </p>
+            </div>
+            """
+            st.markdown(html_download, unsafe_allow_html=True)
+            
+            st.download_button(
+                label="📥 Download Excel Completo",
+                data=st.session_state.comp_excel,
+                file_name=st.session_state.comp_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+        
+        # Botão nova comparação
+        if st.button("🔄 Nova Comparação", use_container_width=True):
+            st.session_state.comp_historico = []
+            st.session_state.comp_excel = None
+            st.session_state.comp_filename = None
+            st.session_state.comp_processando = False
+            st.rerun()
+        
+        st.stop()
     
     uploaded_file = st.file_uploader(
         "Arrasta o ficheiro feed.xml aqui",
@@ -436,6 +504,10 @@ else:  # Modo Comparação Completa
                     st.error("⚠️ Seleciona pelo menos uma loja!")
                     st.stop()
                 
+                # Limpar histórico anterior
+                st.session_state.comp_historico = []
+                st.session_state.comp_processando = True
+                
                 # Criar driver
                 with st.spinner("🌐 A iniciar navegador..."):
                     driver = build_driver(headless=headless)
@@ -513,6 +585,12 @@ else:  # Modo Comparação Completa
                     # 🆕 CHECKPOINT: Adicionar produto ao Excel
                     builder.add_product(product, product_results)
                     
+                    # HISTÓRICO
+                    found = sum(1 for r in product_results.values() if r)
+                    total = len(product_results)
+                    hist_line = f"✅ Ref {ref_idx + 1}: {product.ref_raw} ({found}/{total} lojas)"
+                    st.session_state.comp_historico.append(hist_line)
+                    
                     # 🆕 DOWNLOAD PARCIAL sempre disponível
                     if ref_idx >= 0:  # Sempre (mesmo após 1ª ref)
                         partial_buffer = builder.to_buffer()
@@ -535,40 +613,20 @@ else:  # Modo Comparação Completa
                 # Fechar driver
                 driver.quit()
                 
-                # 🎉 CONCLUSÃO
-                overall_progress.progress(1.0)
-                overall_status.success("🎉 **Comparação concluída!**")
-                
-                st.divider()
-                st.header("✅ Concluído!")
-                
-                # Stats finais
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Produtos Processados", len(products))
-                with col2:
-                    st.metric("Lojas Comparadas", len(scrapers))
-                with col3:
-                    total_searches = len(products) * len(scrapers)
-                    st.metric("Total Buscas", total_searches)
-                
-                # Download final
-                st.divider()
+                # 💾 GUARDAR EXCEL FINAL
                 final_buffer = builder.to_buffer()
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 final_filename = f"comparador_{timestamp}.xlsx"
                 
-                st.download_button(
-                    label="📥 Download Excel Completo",
-                    data=final_buffer,
-                    file_name=final_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
+                st.session_state.comp_excel = final_buffer.getvalue()
+                st.session_state.comp_filename = final_filename
+                st.session_state.comp_processando = False
                 
                 # Cleanup
                 tmp_path.unlink()
+                
+                # RERUN para mostrar histórico + auto-download
+                st.rerun()
                 
         except Exception as e:
             st.error(f"❌ Erro: {e}")
@@ -580,7 +638,7 @@ else:  # Modo Comparação Completa
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p><strong>Comparador de Preços v4.8</strong> | PM Motorparts</p>
-    <p style='font-size: 0.9rem;'>🔍 Busca Rápida + Excel | 📊 Comparação ref-por-ref</p>
+    <p><strong>Comparador de Preços v4.8.2</strong> | PM Motorparts</p>
+    <p style='font-size: 0.9rem;'>🔍 Busca + Excel | 📊 Comparação c/ Histórico</p>
 </div>
 """, unsafe_allow_html=True)

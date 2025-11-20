@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-app_streamlit.py - Comparador de Preços v4.8.6
-COM st.session_state - resultados PERSISTEM após refresh
+app_streamlit.py - Comparador de Preços v4.8.7
+COM st.session_state - resultados PERSISTEM após refresh (AMBOS OS MODOS)
 """
 
 import streamlit as st
@@ -46,6 +46,8 @@ if "quick_search_results" not in st.session_state:
     st.session_state.quick_search_results = None
 if "quick_search_metadata" not in st.session_state:
     st.session_state.quick_search_metadata = None
+if "uploaded_products" not in st.session_state:
+    st.session_state.uploaded_products = None
 if "feed_results" not in st.session_state:
     st.session_state.feed_results = None
 if "feed_metadata" not in st.session_state:
@@ -309,269 +311,297 @@ if modo == "🔍 Busca Rápida (1 Ref)":
 else:  # "📊 Comparação Completa (Feed XML)"
     st.header("📁 Upload do Feed XML")
     
+    # Upload de ficheiro
     uploaded_file = st.file_uploader(
         "Arrasta o ficheiro feed.xml aqui",
         type=['xml']
     )
     
+    # Processar upload e guardar no session_state IMEDIATAMENTE
     if uploaded_file is not None:
-        st.success(f"✅ Ficheiro: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
+        # Verificar se é um ficheiro novo
+        is_new_file = (
+            st.session_state.uploaded_products is None or 
+            st.session_state.uploaded_products.get("filename") != uploaded_file.name
+        )
         
-        try:
-            # Guardar temporariamente
-            tmp_path = Path(tempfile.gettempdir()) / "feed_temp.xml"
-            tmp_path.write_bytes(uploaded_file.read())
+        if is_new_file:
+            st.success(f"✅ A processar: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
             
-            # Parse feed
-            with st.spinner("📖 A ler feed XML..."):
-                all_products = parse_feed(tmp_path)
-            
-            st.info(f"✅ Feed lido: **{len(all_products)} produtos encontrados**")
-            
-            # Preview produtos
-            with st.expander("🔍 Ver produtos do feed"):
-                for idx, p in enumerate(all_products[:20], 1):
-                    st.text(f"{idx}. {p.ref_raw} - {p.title[:60]}")
-                if len(all_products) > 20:
-                    st.text(f"... + {len(all_products) - 20} produtos")
-            
-            st.divider()
-            
-            # Seleção de refs
-            st.subheader("📌 Escolhe as Refs para Processar")
-            st.info("⚠️ **Máximo 10 refs por processamento**")
-            
-            ref_selection = st.selectbox(
-                "Escolhe o grupo",
-                [
-                    "Primeiros 10",
-                    "Refs 11-20",
-                    "Refs 21-30",
-                    "Refs 31-40",
-                    "Custom (escolher refs específicas)"
-                ]
-            )
-            
-            # Determinar produtos selecionados
-            products = []
-            
-            if ref_selection == "Primeiros 10":
-                products = all_products[:10]
-            elif ref_selection == "Refs 11-20":
-                products = all_products[10:20]
-            elif ref_selection == "Refs 21-30":
-                products = all_products[20:30]
-            elif ref_selection == "Refs 31-40":
-                products = all_products[30:40]
-            elif ref_selection == "Custom (escolher refs específicas)":
-                st.info("💡 **Exemplo:** 1,5,10,25,33 (usa números de 1 a " + str(len(all_products)) + ")")
-                custom_input = st.text_input(
-                    "Números das refs (separados por vírgula):",
-                    placeholder="1,5,10,25,33"
-                )
+            try:
+                # Guardar temporariamente
+                tmp_path = Path(tempfile.gettempdir()) / "feed_temp.xml"
+                tmp_path.write_bytes(uploaded_file.read())
                 
-                if custom_input.strip():
-                    try:
-                        indices = [int(x.strip()) - 1 for x in custom_input.split(",")]
-                        
-                        invalid = [i+1 for i in indices if i < 0 or i >= len(all_products)]
-                        if invalid:
-                            st.error(f"❌ Números inválidos: {invalid}")
-                            st.stop()
-                        
-                        if len(indices) > 10:
-                            st.error(f"❌ Máximo 10 refs! Tens {len(indices)}")
-                            st.stop()
-                        
-                        products = [all_products[i] for i in indices]
-                        
-                    except ValueError:
-                        st.error("❌ Formato inválido! Usa números separados por vírgula")
-                        st.stop()
-            
-            # Mostrar seleção
-            if products:
-                st.info(f"📌 **{len(products)} produtos selecionados** para processamento")
+                # Parse feed
+                with st.spinner("📖 A ler feed XML..."):
+                    all_products = parse_feed(tmp_path)
                 
-                with st.expander("🔍 Ver produtos selecionados"):
-                    for idx, p in enumerate(products, 1):
-                        st.text(f"{idx}. {p.ref_raw} - {p.title[:60]}")
-            else:
-                st.warning("⚠️ Escolhe refs custom ou usa outra opção")
-                st.stop()
-            
-            st.divider()
-            
-            col_btn1, col_btn2 = st.columns([2, 1])
-            
-            with col_btn1:
-                compare_clicked = st.button("🚀 Comparar Preços", type="primary", use_container_width=True)
-            
-            with col_btn2:
-                if st.button("🗑️ Limpar Resultados", use_container_width=True, key="clear_feed"):
-                    st.session_state.feed_results = None
-                    st.session_state.feed_metadata = None
-                    st.rerun()
-            
-            # PROCESSAR COMPARAÇÃO (quando botão clicado)
-            if compare_clicked:
-                
-                if not selected_stores:
-                    st.error("⚠️ Seleciona pelo menos uma loja!")
-                    st.stop()
-                
-                # Criar driver
-                with st.spinner("🌐 A iniciar navegador..."):
-                    driver = build_driver(headless=headless)
-                
-                # Criar scrapers
-                scrapers = {}
-                for store_name in selected_stores:
-                    scraper_class = AVAILABLE_SCRAPERS[store_name]
-                    scrapers[store_name.lower().replace(" ", "")] = scraper_class()
-                
-                st.divider()
-                st.header("⚙️ Processamento")
-                
-                # Criar Excel builder
-                builder = ExcelBuilder(list(scrapers.keys()))
-                builder._create_headers()
-                
-                # Progress containers
-                overall_progress = st.progress(0)
-                overall_status = st.empty()
-                
-                # Histórico
-                historico = []
-                
-                # Processar cada REF
-                for ref_idx, product in enumerate(products):
-                    
-                    # Update overall progress
-                    progress_pct = (ref_idx + 1) / len(products)
-                    overall_progress.progress(progress_pct)
-                    overall_status.info(f"📦 Produto {ref_idx + 1}/{len(products)}: **{product.ref_raw}** - {product.title[:50]}")
-                    
-                    # Container para progresso desta ref
-                    ref_progress = st.expander(f"🔍 Ref {ref_idx + 1}: {product.ref_raw}", expanded=(ref_idx == len(products) - 1))
-                    
-                    with ref_progress:
-                        store_progress_bar = st.progress(0)
-                        store_status = st.empty()
-                        
-                        # Resultados desta ref
-                        product_results = {}
-                        
-                        # Processar cada LOJA
-                        for store_idx, (store_key, scraper) in enumerate(scrapers.items()):
-                            
-                            store_pct = (store_idx + 1) / len(scrapers)
-                            store_progress_bar.progress(store_pct)
-                            
-                            store_display = [k for k, v in AVAILABLE_SCRAPERS.items() if k.lower().replace(" ", "") == store_key][0]
-                            store_status.text(f"🏪 {store_display}... ({store_idx + 1}/{len(scrapers)})")
-                            
-                            try:
-                                result = scraper.search_with_cache(
-                                    driver=driver,
-                                    ref_norm=product.ref_norm,
-                                    ref_parts=product.ref_parts,
-                                    ref_raw=product.ref_raw,
-                                    use_cache=use_cache
-                                )
-                                
-                                if result:
-                                    product_results[store_key] = result.to_dict()
-                                else:
-                                    product_results[store_key] = None
-                                    
-                            except Exception as e:
-                                product_results[store_key] = None
-                                st.warning(f"⚠️ Erro em {store_display}: {str(e)[:50]}")
-                        
-                        store_status.success(f"✅ Ref completa! Encontrado em {sum(1 for r in product_results.values() if r)} lojas")
-                    
-                    # Adicionar produto ao Excel
-                    builder.add_product(product, product_results)
-                    
-                    # Histórico
-                    found = sum(1 for r in product_results.values() if r)
-                    total = len(product_results)
-                    hist_line = f"✅ Ref {ref_idx + 1}: {product.ref_raw} ({found}/{total} lojas)"
-                    historico.append(hist_line)
-                
-                # Fechar driver
-                driver.quit()
-                
-                # GUARDAR no session_state
-                final_buffer = builder.to_buffer()
-                
-                st.session_state.feed_results = {
-                    "excel_buffer": final_buffer,
-                    "historico": historico
-                }
-                st.session_state.feed_metadata = {
-                    "num_products": len(products),
+                # GUARDAR no session_state IMEDIATAMENTE
+                st.session_state.uploaded_products = {
+                    "products": all_products,
+                    "filename": uploaded_file.name,
                     "timestamp": datetime.now()
                 }
+                
+                # Limpar resultados anteriores (novo ficheiro)
+                st.session_state.feed_results = None
+                st.session_state.feed_metadata = None
                 
                 # Cleanup
                 tmp_path.unlink()
                 
                 st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao ler ficheiro: {e}")
+                import traceback
+                with st.expander("🔍 Detalhes"):
+                    st.code(traceback.format_exc())
+                st.stop()
+    
+    # Trabalhar com produtos guardados no session_state
+    if st.session_state.uploaded_products is not None:
+        
+        upload_data = st.session_state.uploaded_products
+        all_products = upload_data["products"]
+        
+        st.success(f"✅ Ficheiro: **{upload_data['filename']}** | {len(all_products)} produtos encontrados")
+        
+        # Preview produtos
+        with st.expander("🔍 Ver produtos do feed"):
+            for idx, p in enumerate(all_products[:20], 1):
+                st.text(f"{idx}. {p.ref_raw} - {p.title[:60]}")
+            if len(all_products) > 20:
+                st.text(f"... + {len(all_products) - 20} produtos")
+        
+        st.divider()
+        
+        # Seleção de refs
+        st.subheader("📌 Escolhe as Refs para Processar")
+        st.info("⚠️ **Máximo 10 refs por processamento**")
+        
+        ref_selection = st.selectbox(
+            "Escolhe o grupo",
+            [
+                "Primeiros 10",
+                "Refs 11-20",
+                "Refs 21-30",
+                "Refs 31-40",
+                "Custom (escolher refs específicas)"
+            ]
+        )
+        
+        # Determinar produtos selecionados
+        products = []
+        
+        if ref_selection == "Primeiros 10":
+            products = all_products[:10]
+        elif ref_selection == "Refs 11-20":
+            products = all_products[10:20]
+        elif ref_selection == "Refs 21-30":
+            products = all_products[20:30]
+        elif ref_selection == "Refs 31-40":
+            products = all_products[30:40]
+        elif ref_selection == "Custom (escolher refs específicas)":
+            st.info("💡 **Exemplo:** 1,5,10,25,33 (usa números de 1 a " + str(len(all_products)) + ")")
+            custom_input = st.text_input(
+                "Números das refs (separados por vírgula):",
+                placeholder="1,5,10,25,33"
+            )
             
-            # MOSTRAR RESULTADOS (se existirem no session_state)
-            if st.session_state.feed_results is not None:
-                
-                feed_data = st.session_state.feed_results
-                feed_meta = st.session_state.feed_metadata
-                
+            if custom_input.strip():
+                try:
+                    indices = [int(x.strip()) - 1 for x in custom_input.split(",")]
+                    
+                    invalid = [i+1 for i in indices if i < 0 or i >= len(all_products)]
+                    if invalid:
+                        st.error(f"❌ Números inválidos: {invalid}")
+                        st.stop()
+                    
+                    if len(indices) > 10:
+                        st.error(f"❌ Máximo 10 refs! Tens {len(indices)}")
+                        st.stop()
+                    
+                    products = [all_products[i] for i in indices]
+                    
+                except ValueError:
+                    st.error("❌ Formato inválido! Usa números separados por vírgula")
+                    st.stop()
+        
+        # Mostrar seleção
+        if products:
+            st.info(f"📌 **{len(products)} produtos selecionados** para processamento")
+            
+            with st.expander("🔍 Ver produtos selecionados"):
+                for idx, p in enumerate(products, 1):
+                    st.text(f"{idx}. {p.ref_raw} - {p.title[:60]}")
+        else:
+            st.warning("⚠️ Escolhe refs custom ou usa outra opção")
+            st.stop()
+        
+        st.divider()
+        
+        col_btn1, col_btn2 = st.columns([2, 1])
+        
+        with col_btn1:
+            compare_clicked = st.button("🚀 Comparar Preços", type="primary", use_container_width=True)
+        
+        with col_btn2:
+            if st.button("🗑️ Limpar Tudo", use_container_width=True, key="clear_all"):
+                st.session_state.uploaded_products = None
+                st.session_state.feed_results = None
+                st.session_state.feed_metadata = None
+                st.rerun()
+        
+        # PROCESSAR COMPARAÇÃO (quando botão clicado)
+        if compare_clicked:
+            
+            if not selected_stores:
+                st.error("⚠️ Seleciona pelo menos uma loja!")
+                st.stop()
+            
+            # Container para processamento
+            processing_container = st.empty()
+            
+            with processing_container.container():
                 st.divider()
+                st.header("⚙️ Processamento em Curso...")
+                st.warning("⏳ **Aguarda...** Não feches esta página!")
                 
-                st.markdown('<div class="results-container">', unsafe_allow_html=True)
+                status_text = st.empty()
+                progress_bar = st.progress(0)
+            
+            # Criar driver
+            driver = build_driver(headless=headless)
+            
+            # Criar scrapers
+            scrapers = {}
+            for store_name in selected_stores:
+                scraper_class = AVAILABLE_SCRAPERS[store_name]
+                scrapers[store_name.lower().replace(" ", "")] = scraper_class()
+            
+            # Criar Excel builder
+            builder = ExcelBuilder(list(scrapers.keys()))
+            builder._create_headers()
+            
+            # Histórico
+            historico = []
+            
+            # Processar cada REF
+            for ref_idx, product in enumerate(products):
                 
-                st.success("✅ **Comparação Completa - Terminada!**")
+                # Update status
+                progress_pct = (ref_idx + 1) / len(products)
+                progress_bar.progress(progress_pct)
+                status_text.text(f"📦 Processando {ref_idx + 1}/{len(products)}: {product.ref_raw}")
                 
-                st.info(f"📦 **{feed_meta['num_products']} referências processadas** | **Concluído em:** {feed_meta['timestamp'].strftime('%d/%m/%Y %H:%M:%S')}")
+                # Resultados desta ref
+                product_results = {}
+                
+                # Processar cada LOJA
+                for store_key, scraper in scrapers.items():
+                    try:
+                        result = scraper.search_with_cache(
+                            driver=driver,
+                            ref_norm=product.ref_norm,
+                            ref_parts=product.ref_parts,
+                            ref_raw=product.ref_raw,
+                            use_cache=use_cache
+                        )
+                        
+                        if result:
+                            product_results[store_key] = result.to_dict()
+                        else:
+                            product_results[store_key] = None
+                            
+                    except Exception as e:
+                        product_results[store_key] = None
+                
+                # Adicionar produto ao Excel
+                builder.add_product(product, product_results)
                 
                 # Histórico
-                with st.expander("📋 Histórico de Processamento", expanded=True):
-                    for linha in feed_data["historico"]:
-                        st.text(linha)
+                found = sum(1 for r in product_results.values() if r)
+                total = len(product_results)
+                hist_line = f"✅ Ref {ref_idx + 1}: {product.ref_raw} ({found}/{total} lojas)"
+                historico.append(hist_line)
                 
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                st.divider()
-                
-                # DOWNLOAD FINAL
-                timestamp = feed_meta['timestamp'].strftime("%Y%m%d_%H%M%S")
-                final_filename = f"comparador_{timestamp}.xlsx"
-                
-                st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
-                st.markdown("### 📥 Ficheiro Excel Completo!")
-                st.markdown(f"**{feed_meta['num_products']} referências processadas**")
-                
-                st.download_button(
-                    label="📥 DOWNLOAD EXCEL COMPLETO",
-                    data=feed_data["excel_buffer"].getvalue(),
-                    file_name=final_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-        except Exception as e:
-            st.error(f"❌ Erro: {e}")
-            import traceback
-            with st.expander("🔍 Detalhes"):
-                st.code(traceback.format_exc())
+                # GUARDAR PROGRESSIVAMENTE no session_state
+                st.session_state.feed_results = {
+                    "excel_buffer": builder.to_buffer(),
+                    "historico": historico,
+                    "completed": (ref_idx + 1) == len(products)
+                }
+                st.session_state.feed_metadata = {
+                    "num_products": len(products),
+                    "processed": ref_idx + 1,
+                    "timestamp": datetime.now()
+                }
+            
+            # Fechar driver
+            driver.quit()
+            
+            # Limpar container de processamento
+            processing_container.empty()
+            
+            # Rerun para mostrar resultados
+            st.rerun()
+        
+        # MOSTRAR RESULTADOS (se existirem no session_state)
+        if st.session_state.feed_results is not None:
+            
+            feed_data = st.session_state.feed_results
+            feed_meta = st.session_state.feed_metadata
+            
+            st.divider()
+            
+            st.markdown('<div class="results-container">', unsafe_allow_html=True)
+            
+            if feed_data.get("completed", False):
+                st.success("✅ **Comparação Completa - Terminada!**")
+            else:
+                st.warning(f"⚠️ **Processamento Interrompido** - {feed_meta['processed']}/{feed_meta['num_products']} refs processadas")
+            
+            st.info(f"📦 **{feed_meta['processed']} referências processadas** | **Última atualização:** {feed_meta['timestamp'].strftime('%d/%m/%Y %H:%M:%S')}")
+            
+            # Histórico
+            with st.expander("📋 Histórico de Processamento", expanded=True):
+                for linha in feed_data["historico"]:
+                    st.text(linha)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # DOWNLOAD
+            timestamp = feed_meta['timestamp'].strftime("%Y%m%d_%H%M%S")
+            if feed_data.get("completed", False):
+                final_filename = f"comparador_completo_{timestamp}.xlsx"
+                label = "📥 DOWNLOAD EXCEL COMPLETO"
+            else:
+                final_filename = f"comparador_parcial_{timestamp}.xlsx"
+                label = f"📥 DOWNLOAD EXCEL PARCIAL ({feed_meta['processed']} refs)"
+            
+            st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
+            st.markdown("### 📥 Ficheiro Excel Pronto!")
+            st.markdown(f"**{feed_meta['processed']} referências processadas**")
+            
+            st.download_button(
+                label=label,
+                data=feed_data["excel_buffer"].getvalue(),
+                file_name=final_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
 
 # Footer
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p><strong>Comparador de Preços v4.8.6</strong> | PM Motorparts</p>
-    <p style='font-size: 0.9rem;'>✅ COM session_state | 📥 Resultados Persistentes</p>
+    <p><strong>Comparador de Preços v4.8.7</strong> | PM Motorparts</p>
+    <p style='font-size: 0.9rem;'>✅ Session State Persistente | 📥 Resultados Protegidos</p>
 </div>
 """, unsafe_allow_html=True)

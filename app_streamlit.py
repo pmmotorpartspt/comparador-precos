@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-app_streamlit.py - Comparador de Preços VERSÃO WEB v2
+app_streamlit.py - Comparador de Preços VERSÃO WEB v4.8.3
+v4.8.3: Session state FUNCIONAL + Downloads simples (sem auto-download JS)
 Interface web com:
 1. Modo Completo (Feed XML)
 2. Modo Busca Rápida (Ref Individual)
@@ -8,7 +9,6 @@ Interface web com:
 
 import streamlit as st
 import io
-import base64
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -60,18 +60,12 @@ st.markdown("""
         text-align: center;
         margin-bottom: 3rem;
     }
-    .quick-result {
-        padding: 1rem;
-        border-radius: 5px;
-        margin: 0.5rem 0;
-    }
-    .result-found {
+    .download-highlight {
         background-color: #d4edda;
         border-left: 4px solid #28a745;
-    }
-    .result-not-found {
-        background-color: #f8d7da;
-        border-left: 4px solid #dc3545;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -101,21 +95,85 @@ with st.sidebar:
     
     st.divider()
     
-    st.subheader("🎛️ Opções")
-    use_cache = st.checkbox("Usar cache", value=True)
-    headless = st.checkbox("Modo invisível", value=True)
+    st.subheader("🔧 Opções")
+    use_cache = st.toggle("Usar cache (21 dias)", value=True, help="Cache acelera buscas repetidas")
+    headless = st.toggle("Modo headless", value=True, help="Navegador invisível (mais rápido)")
+
 
 # ============================================================================
-# MODO 1: BUSCA RÁPIDA (1 REF) - COM SESSION STATE + AUTO-DOWNLOAD
+# MODO 1: BUSCA RÁPIDA - COM SESSION STATE SIMPLIFICADO
 # ============================================================================
 
 if modo == "🔍 Busca Rápida (1 Ref)":
     st.header("🔍 Busca Rápida de Referência")
     
-    # Inicializar session state
+    # 🆕 Inicializar session state (SEMPRE primeiro)
     if 'busca_resultados' not in st.session_state:
         st.session_state.busca_resultados = None
+        st.session_state.busca_excel = None
+        st.session_state.busca_filename = None
     
+    # 🆕 MOSTRAR RESULTADOS GUARDADOS (se existirem)
+    if st.session_state.busca_resultados is not None:
+        st.divider()
+        
+        # Título destaque
+        st.success("✅ **Resultados da Última Busca**")
+        
+        results = st.session_state.busca_resultados
+        
+        # Criar DataFrame
+        df = pd.DataFrame(results)
+        
+        # Mostrar tabela
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Estatísticas rápidas
+        found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Lojas Pesquisadas", len(results))
+        with col2:
+            st.metric("Encontrado em", found_count)
+        with col3:
+            if found_count > 0:
+                st.metric("Taxa Sucesso", f"{found_count/len(results)*100:.0f}%")
+        
+        # 🎯 DOWNLOAD SIMPLES (sem JavaScript)
+        if found_count > 0 and st.session_state.busca_excel:
+            st.divider()
+            
+            # Destaque visual
+            st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
+            st.markdown("### 📥 Ficheiro Excel Pronto!")
+            st.markdown("**Clica no botão abaixo para descarregar**")
+            
+            st.download_button(
+                label="📥 DOWNLOAD EXCEL",
+                data=st.session_state.busca_excel,
+                file_name=st.session_state.busca_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Botão nova busca
+        st.divider()
+        if st.button("🔄 Nova Busca", use_container_width=True):
+            st.session_state.busca_resultados = None
+            st.session_state.busca_excel = None
+            st.session_state.busca_filename = None
+            st.rerun()
+        
+        st.stop()  # Parar aqui para não mostrar form de busca
+    
+    # FORMULÁRIO DE BUSCA (só aparece se não há resultados)
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -217,111 +275,30 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             driver.quit()
             progress_bar.empty()
             
-            # 💾 GUARDAR EM SESSION STATE (só resultados)
+            # 💾 GUARDAR EM SESSION STATE
             st.session_state.busca_resultados = results
-            st.session_state.busca_ref = ref_input.strip()
-            st.session_state.busca_ref_norm = ref_norm
-            st.session_state.busca_your_price = your_price
-            st.session_state.busca_stores = selected_stores
-    
-    # Mostrar resultados (de session state ou recém-processados)
-    if st.session_state.busca_resultados is not None:
-        results = st.session_state.busca_resultados
-        
-        st.divider()
-        st.subheader("📊 Resultados")
-        
-        # Criar DataFrame
-        df = pd.DataFrame(results)
-        
-        # Mostrar tabela
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Estatísticas rápidas
-        found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Lojas Pesquisadas", len(results))
-        with col2:
-            st.metric("Encontrado em", found_count)
-        with col3:
+            
+            # 🆕 GERAR EXCEL e GUARDAR
+            found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
+            
             if found_count > 0:
-                st.metric("Taxa Sucesso", f"{found_count/len(results)*100:.0f}%")
-        
-        # 🆕 AUTO-DOWNLOAD + BOTÃO MANUAL
-        st.divider()
-        
-        if found_count > 0:
-            # GERAR EXCEL (sempre, on-demand)
-            from core.excel import create_single_ref_excel
+                from core.excel import create_single_ref_excel
+                
+                excel_buffer = create_single_ref_excel(
+                    ref=ref_input.strip(),
+                    ref_norm=ref_norm,
+                    your_price=your_price,
+                    store_names=selected_stores,
+                    results=results
+                )
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"busca_{ref_norm}_{timestamp}.xlsx"
+                
+                st.session_state.busca_excel = excel_buffer.getvalue()
+                st.session_state.busca_filename = filename
             
-            # Recuperar dados do session state
-            ref = st.session_state.get('busca_ref', 'produto')
-            ref_norm = st.session_state.get('busca_ref_norm', 'produto')
-            your_price = st.session_state.get('busca_your_price', 0.0)
-            stores = st.session_state.get('busca_stores', [])
-            
-            excel_buffer = create_single_ref_excel(
-                ref=ref,
-                ref_norm=ref_norm,
-                your_price=your_price,
-                store_names=stores,
-                results=results
-            )
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"busca_{ref_norm}_{timestamp}.xlsx"
-            excel_bytes = excel_buffer.getvalue()
-            
-            # AUTO-DOWNLOAD via HTML/JS
-            excel_b64 = base64.b64encode(excel_bytes).decode()
-            
-            html_download = f"""
-            <script>
-            // Auto-download quando página carrega
-            window.onload = function() {{
-                // Só faz download se não fez ainda (evita repetir)
-                if (!sessionStorage.getItem('downloaded_{filename}')) {{
-                    const link = document.createElement('a');
-                    link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}';
-                    link.download = '{filename}';
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    sessionStorage.setItem('downloaded_{filename}', 'true');
-                }}
-            }};
-            </script>
-            <div style='padding: 1rem; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 5px; margin-bottom: 1rem;'>
-                <p style='margin: 0; color: #155724;'>
-                    ✅ <strong>Excel a descarregar automaticamente...</strong><br>
-                    <small>Se não descarregou, usa o botão abaixo</small>
-                </p>
-            </div>
-            """
-            
-            st.markdown(html_download, unsafe_allow_html=True)
-            
-            # Botão manual (fallback)
-            st.download_button(
-                label="📥 Download Manual (se auto falhou)",
-                data=excel_bytes,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                help="Usa este se download automático não funcionou"
-            )
-        else:
-            st.info("ℹ️ Nenhum produto encontrado. Download Excel não disponível.")
-        
-        # Botão limpar resultados
-        if st.button("🔄 Nova Busca", use_container_width=True):
-            st.session_state.busca_resultados = None
+            # RERUN para mostrar resultados (com download)
             st.rerun()
 
 
@@ -342,9 +319,10 @@ else:  # Modo Comparação Completa
     if 'comp_processando' not in st.session_state:
         st.session_state.comp_processando = False
     
-    # Mostrar histórico se existe
+    # 🆕 MOSTRAR RESULTADOS GUARDADOS (se existirem)
     if st.session_state.comp_historico and not st.session_state.comp_processando:
         st.divider()
+        
         st.success("✅ **Processamento Concluído!**")
         
         # Histórico
@@ -352,45 +330,27 @@ else:  # Modo Comparação Completa
             for item in st.session_state.comp_historico:
                 st.text(item)
         
-        # Download com auto-download
+        # 🎯 DOWNLOAD SIMPLES
         if st.session_state.comp_excel:
             st.divider()
             
-            # AUTO-DOWNLOAD
-            excel_b64 = base64.b64encode(st.session_state.comp_excel).decode()
-            html_download = f"""
-            <script>
-            window.onload = function() {{
-                if (!sessionStorage.getItem('downloaded_{st.session_state.comp_filename}')) {{
-                    const link = document.createElement('a');
-                    link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}';
-                    link.download = '{st.session_state.comp_filename}';
-                    document.body.appendChild(link);
-                    link.click();
-                    document.body.removeChild(link);
-                    sessionStorage.setItem('downloaded_{st.session_state.comp_filename}', 'true');
-                }}
-            }};
-            </script>
-            <div style='padding: 1rem; background-color: #d4edda; border-left: 4px solid #28a745; border-radius: 5px; margin-bottom: 1rem;'>
-                <p style='margin: 0; color: #155724;'>
-                    ✅ <strong>Excel a descarregar automaticamente...</strong><br>
-                    <small>Se não descarregou, usa o botão abaixo</small>
-                </p>
-            </div>
-            """
-            st.markdown(html_download, unsafe_allow_html=True)
+            # Destaque visual
+            st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
+            st.markdown("### 📥 Ficheiro Excel Completo Pronto!")
+            st.markdown(f"**{len(st.session_state.comp_historico)} referências processadas**")
             
             st.download_button(
-                label="📥 Download Excel Completo",
+                label="📥 DOWNLOAD EXCEL COMPLETO",
                 data=st.session_state.comp_excel,
                 file_name=st.session_state.comp_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True
             )
+            st.markdown('</div>', unsafe_allow_html=True)
         
         # Botão nova comparação
+        st.divider()
         if st.button("🔄 Nova Comparação", use_container_width=True):
             st.session_state.comp_historico = []
             st.session_state.comp_excel = None
@@ -398,8 +358,9 @@ else:  # Modo Comparação Completa
             st.session_state.comp_processando = False
             st.rerun()
         
-        st.stop()
+        st.stop()  # Parar aqui
     
+    # FORMULÁRIO DE UPLOAD (só aparece se não há resultados)
     uploaded_file = st.file_uploader(
         "Arrasta o ficheiro feed.xml aqui",
         type=['xml']
@@ -625,7 +586,7 @@ else:  # Modo Comparação Completa
                 # Cleanup
                 tmp_path.unlink()
                 
-                # RERUN para mostrar histórico + auto-download
+                # RERUN para mostrar histórico + download
                 st.rerun()
                 
         except Exception as e:
@@ -638,7 +599,7 @@ else:  # Modo Comparação Completa
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p><strong>Comparador de Preços v4.8.2</strong> | PM Motorparts</p>
-    <p style='font-size: 0.9rem;'>🔍 Busca + Excel | 📊 Comparação c/ Histórico</p>
+    <p><strong>Comparador de Preços v4.8.3</strong> | PM Motorparts</p>
+    <p style='font-size: 0.9rem;'>✅ Session State Funcional | 📥 Downloads Simples</p>
 </div>
 """, unsafe_allow_html=True)

@@ -87,6 +87,18 @@ class ExcelBuilder:
             self.ws.column_dimensions[get_column_letter(col + 2)].width = 40  # URL
             col += 3
     
+    def add_product(self, product: FeedProduct, 
+                   store_results: Dict[str, Optional[Dict]]):
+        """
+        Adiciona linha de produto. (Alias para add_product_row)
+        
+        Args:
+            product: FeedProduct do feed
+            store_results: Dict {store_name: result_dict ou None}
+                result_dict tem: url, price_text, price_num, confidence
+        """
+        self.add_product_row(product, store_results)
+    
     def add_product_row(self, product: FeedProduct, 
                        store_results: Dict[str, Optional[Dict]]):
         """
@@ -208,6 +220,24 @@ class ExcelBuilder:
         
         # Salvar
         self.wb.save(output_path)
+    
+    def to_buffer(self):
+        """
+        Salva workbook em BytesIO (para download no Streamlit).
+        
+        Returns:
+            BytesIO com o conteúdo do Excel
+        """
+        from io import BytesIO
+        
+        # Congelar primeira linha (headers)
+        self.ws.freeze_panes = "A2"
+        
+        # Salvar em buffer
+        buffer = BytesIO()
+        self.wb.save(buffer)
+        buffer.seek(0)
+        return buffer
 
 
 def build_excel(products: List[FeedProduct],
@@ -248,6 +278,73 @@ def build_excel(products: List[FeedProduct],
         builder.add_product_row(product, store_results)
     
     builder.save(output_path)
+
+
+def create_single_ref_excel(ref: str, ref_norm: str, your_price: float,
+                            store_names: List[str], 
+                            results: List[Dict]) -> 'BytesIO':
+    """
+    Cria Excel para uma única referência (usado na Busca Rápida).
+    
+    Args:
+        ref: Referência original
+        ref_norm: Referência normalizada
+        your_price: Teu preço
+        store_names: Lista de nomes das lojas
+        results: Lista de dicts com resultados da busca
+            [{"Loja": "WRS", "Preço": "€42.50", "Diferença": "-6.7%", "URL": "..."}]
+    
+    Returns:
+        BytesIO com Excel gerado
+    """
+    from io import BytesIO
+    from .feed import FeedProduct
+    
+    # Criar produto fake para usar no builder
+    product = FeedProduct(
+        id="1",
+        title=f"Busca: {ref}",
+        link="",
+        price_text=f"€{your_price:.2f}" if your_price > 0 else "—",
+        price_num=your_price if your_price > 0 else None,
+        ref_raw=ref,
+        ref_norm=ref_norm,
+        ref_parts=[ref_norm]
+    )
+    
+    # Montar store_results a partir dos resultados
+    store_results = {}
+    for result_dict in results:
+        store_name = result_dict["Loja"]
+        
+        # Converter para formato esperado pelo builder
+        if result_dict["Preço"] != "Não encontrado" and not result_dict["Preço"].startswith("Erro"):
+            # Parse do preço
+            price_text = result_dict["Preço"]
+            try:
+                # Extrair número do preço (remover €, espaços, etc)
+                price_num = float(price_text.replace("€", "").replace(",", ".").strip())
+            except:
+                price_num = None
+            
+            store_results[store_name.lower().replace(" ", "")] = {
+                "url": result_dict.get("URL", ""),
+                "price_text": price_text,
+                "price_num": price_num,
+                "confidence": 1.0
+            }
+        else:
+            # Não encontrado
+            store_results[store_name.lower().replace(" ", "")] = None
+    
+    # Criar builder
+    store_keys = [name.lower().replace(" ", "") for name in store_names]
+    builder = ExcelBuilder(store_keys)
+    builder._create_headers()
+    builder.add_product(product, store_results)
+    
+    # Retornar buffer
+    return builder.to_buffer()
 
 
 # ============================================================================

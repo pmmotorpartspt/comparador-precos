@@ -131,7 +131,7 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             with st.spinner("🌐 A iniciar navegador..."):
                 driver = build_driver(headless=headless)
             
-            ref_norm = normalize_reference(ref_input.strip())
+            ref_norm, _ = normalize_reference(ref_input.strip())
             ref_parts = ref_norm.replace("-", "").lower()
             
             st.divider()

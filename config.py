@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Comparador v4.7 - Configurações Centralizadas
-Otimizado para uso SEMANAL
+Comparador v4.8 - Configurações Centralizadas
+Otimizado para uso SEMANAL + Comparação ref-por-ref
 """
 from pathlib import Path
 
@@ -19,6 +19,13 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Excel de saída
 EXCEL_OUTPUT = OUTPUT_DIR / "comparador_todas_lojas.xlsx"
+
+# ============================================================================
+# COMPARAÇÃO - Limites de processamento
+# ============================================================================
+# Limite de refs por execução (evitar timeout Streamlit Cloud ~10-15 min)
+# 10 refs × 6 lojas = 60 buscas = ~7-12 minutos (seguro)
+MAX_REFS_PER_RUN = 10
 
 # ============================================================================
 # SELENIUM - Configurações do Chrome

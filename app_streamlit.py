@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-app_streamlit.py - Comparador de Preços v4.8.4 FIXED
-CORREÇÃO: Session state ROBUSTO - dados persistem SEMPRE
+app_streamlit.py - Comparador de Preços v4.8.5
+SEM st.rerun() - resultados mostrados DURANTE processamento
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
-# Configurar página (tem de ser a primeira chamada Streamlit)
+# Configurar página
 st.set_page_config(
     page_title="Comparador de Preços - PM Motorparts",
     page_icon="🏍️",
@@ -21,7 +21,7 @@ st.set_page_config(
 
 # Imports do projeto
 from core.feed import parse_feed
-from core.excel import ExcelBuilder
+from core.excel import ExcelBuilder, create_single_ref_excel
 from core.selenium_utils import build_driver
 from core.normalization import normalize_reference
 
@@ -40,28 +40,6 @@ AVAILABLE_SCRAPERS = {
     "MMG Racing": MMGRacingStoreScraper,
     "EM Moto": EMMotoScraper,
 }
-
-# ============================================================================
-# INICIALIZAR SESSION STATE (LOGO NO INÍCIO)
-# ============================================================================
-
-# Busca Rápida
-if 'busca_resultados' not in st.session_state:
-    st.session_state.busca_resultados = None
-if 'busca_excel' not in st.session_state:
-    st.session_state.busca_excel = None
-if 'busca_filename' not in st.session_state:
-    st.session_state.busca_filename = None
-
-# Comparação Completa
-if 'comp_historico' not in st.session_state:
-    st.session_state.comp_historico = []
-if 'comp_excel' not in st.session_state:
-    st.session_state.comp_excel = None
-if 'comp_filename' not in st.session_state:
-    st.session_state.comp_filename = None
-if 'comp_processando' not in st.session_state:
-    st.session_state.comp_processando = False
 
 # CSS customizado
 st.markdown("""
@@ -93,7 +71,7 @@ st.markdown("""
 st.markdown('<div class="main-header">🏍️ Comparador de Preços</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">PM Motorparts - Comparação Multi-Loja Automática</div>', unsafe_allow_html=True)
 
-# Sidebar - Modo de Operação
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Configurações")
     
@@ -115,8 +93,8 @@ with st.sidebar:
     st.divider()
     
     st.subheader("🔧 Opções")
-    use_cache = st.toggle("Usar cache (21 dias)", value=True, help="Cache acelera buscas repetidas")
-    headless = st.toggle("Modo headless", value=True, help="Navegador invisível (mais rápido)")
+    use_cache = st.toggle("Usar cache (21 dias)", value=True)
+    headless = st.toggle("Modo headless", value=True)
 
 
 # ============================================================================
@@ -126,72 +104,12 @@ with st.sidebar:
 if modo == "🔍 Busca Rápida (1 Ref)":
     st.header("🔍 Busca Rápida de Referência")
     
-    # MOSTRAR RESULTADOS GUARDADOS (se existirem)
-    if st.session_state.busca_resultados is not None:
-        st.divider()
-        
-        st.success("✅ **Resultados da Última Busca**")
-        
-        results = st.session_state.busca_resultados
-        
-        # Criar DataFrame
-        df = pd.DataFrame(results)
-        
-        # Mostrar tabela
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Estatísticas rápidas
-        found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Lojas Pesquisadas", len(results))
-        with col2:
-            st.metric("Encontrado em", found_count)
-        with col3:
-            if found_count > 0:
-                st.metric("Taxa Sucesso", f"{found_count/len(results)*100:.0f}%")
-        
-        # DOWNLOAD
-        if found_count > 0 and st.session_state.busca_excel:
-            st.divider()
-            
-            st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
-            st.markdown("### 📥 Ficheiro Excel Pronto!")
-            st.markdown("**Clica no botão abaixo para descarregar**")
-            
-            st.download_button(
-                label="📥 DOWNLOAD EXCEL",
-                data=st.session_state.busca_excel,
-                file_name=st.session_state.busca_filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                use_container_width=True
-            )
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Botão nova busca
-        st.divider()
-        if st.button("🔄 Nova Busca", use_container_width=True):
-            st.session_state.busca_resultados = None
-            st.session_state.busca_excel = None
-            st.session_state.busca_filename = None
-            st.rerun()
-        
-        st.stop()
-    
-    # FORMULÁRIO DE BUSCA
     col1, col2 = st.columns([3, 1])
     
     with col1:
         ref_input = st.text_input(
             "Referência do Produto",
-            placeholder="Ex: 07BB37LA, P-HF1595, H.085.LR1X",
-            help="Cola a referência que queres pesquisar"
+            placeholder="Ex: 07BB37LA, P-HF1595, H.085.LR1X"
         )
     
     with col2:
@@ -199,8 +117,7 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             "Teu Preço (opcional)",
             min_value=0.0,
             value=0.0,
-            step=0.01,
-            help="Para calcular diferenças"
+            step=0.01
         )
     
     if st.button("🚀 Buscar Agora", type="primary", use_container_width=True):
@@ -282,15 +199,30 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             
             driver.quit()
             progress_bar.empty()
+            status_placeholder.empty()
             
-            # GUARDAR EM SESSION STATE
-            st.session_state.busca_resultados = results
+            # MOSTRAR RESULTADOS
+            st.divider()
+            st.success("✅ **Busca Completa**")
             
-            # GERAR EXCEL e GUARDAR
+            df = pd.DataFrame(results)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # Estatísticas
             found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
             
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Lojas Pesquisadas", len(results))
+            with col2:
+                st.metric("Encontrado em", found_count)
+            with col3:
+                if found_count > 0:
+                    st.metric("Taxa Sucesso", f"{found_count/len(results)*100:.0f}%")
+            
+            # DOWNLOAD
             if found_count > 0:
-                from core.excel import create_single_ref_excel
+                st.divider()
                 
                 excel_buffer = create_single_ref_excel(
                     ref=ref_input.strip(),
@@ -303,58 +235,25 @@ if modo == "🔍 Busca Rápida (1 Ref)":
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"busca_{ref_norm}_{timestamp}.xlsx"
                 
-                st.session_state.busca_excel = excel_buffer.getvalue()
-                st.session_state.busca_filename = filename
-            
-            # RERUN para mostrar resultados
-            st.rerun()
+                st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
+                st.markdown("### 📥 Ficheiro Excel Pronto!")
+                
+                st.download_button(
+                    label="📥 DOWNLOAD EXCEL",
+                    data=excel_buffer.getvalue(),
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============================================================================
-# MODO 2: COMPARAÇÃO COMPLETA - VERSÃO FIXED
+# MODO 2: COMPARAÇÃO COMPLETA
 # ============================================================================
 
 else:  # "📊 Comparação Completa (Feed XML)"
-    
-    # 🎯 MOSTRAR RESULTADOS GUARDADOS (PRIMEIRO - ANTES DE TUDO)
-    if st.session_state.comp_excel is not None:
-        st.success("✅ **Comparação Completa - Terminada!**")
-        
-        # Histórico
-        if st.session_state.comp_historico:
-            with st.expander("📋 Histórico de Processamento", expanded=True):
-                for linha in st.session_state.comp_historico:
-                    st.text(linha)
-        
-        st.divider()
-        
-        # DOWNLOAD FINAL
-        st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
-        st.markdown("### 📥 Ficheiro Excel Completo!")
-        st.markdown("**Clica no botão abaixo para descarregar a comparação completa**")
-        
-        st.download_button(
-            label="📥 DOWNLOAD EXCEL COMPLETO",
-            data=st.session_state.comp_excel,
-            file_name=st.session_state.comp_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            use_container_width=True
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Botão nova comparação
-        st.divider()
-        if st.button("🔄 Nova Comparação", use_container_width=True):
-            st.session_state.comp_historico = []
-            st.session_state.comp_excel = None
-            st.session_state.comp_filename = None
-            st.session_state.comp_processando = False
-            st.rerun()
-        
-        st.stop()
-    
-    # FORMULÁRIO DE UPLOAD (só aparece se não há resultados)
     st.header("📁 Upload do Feed XML")
     
     uploaded_file = st.file_uploader(
@@ -372,7 +271,7 @@ else:  # "📊 Comparação Completa (Feed XML)"
             
             # Parse feed
             with st.spinner("📖 A ler feed XML..."):
-                all_products = parse_feed(str(tmp_path))
+                all_products = parse_feed(tmp_path)
             
             st.info(f"✅ Feed lido: **{len(all_products)} produtos encontrados**")
             
@@ -434,7 +333,7 @@ else:  # "📊 Comparação Completa (Feed XML)"
                         products = [all_products[i] for i in indices]
                         
                     except ValueError:
-                        st.error("❌ Formato inválido! Usa números separados por vírgula (ex: 1,5,10)")
+                        st.error("❌ Formato inválido! Usa números separados por vírgula")
                         st.stop()
             
             # Mostrar seleção
@@ -457,12 +356,6 @@ else:  # "📊 Comparação Completa (Feed XML)"
                     st.error("⚠️ Seleciona pelo menos uma loja!")
                     st.stop()
                 
-                # LIMPAR estado anterior
-                st.session_state.comp_historico = []
-                st.session_state.comp_excel = None
-                st.session_state.comp_filename = None
-                st.session_state.comp_processando = True
-                
                 # Criar driver
                 with st.spinner("🌐 A iniciar navegador..."):
                     driver = build_driver(headless=headless)
@@ -484,8 +377,8 @@ else:  # "📊 Comparação Completa (Feed XML)"
                 overall_progress = st.progress(0)
                 overall_status = st.empty()
                 
-                # Container para download parcial
-                download_container = st.empty()
+                # Histórico
+                historico = []
                 
                 # Processar cada REF
                 for ref_idx, product in enumerate(products):
@@ -537,48 +430,47 @@ else:  # "📊 Comparação Completa (Feed XML)"
                     # Adicionar produto ao Excel
                     builder.add_product(product, product_results)
                     
-                    # HISTÓRICO
+                    # Histórico
                     found = sum(1 for r in product_results.values() if r)
                     total = len(product_results)
                     hist_line = f"✅ Ref {ref_idx + 1}: {product.ref_raw} ({found}/{total} lojas)"
-                    st.session_state.comp_historico.append(hist_line)
-                    
-                    # DOWNLOAD PARCIAL
-                    if ref_idx >= 0:
-                        partial_buffer = builder.to_buffer()
-                        
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        filename = f"comparador_parcial_{ref_idx + 1}refs_{timestamp}.xlsx"
-                        
-                        with download_container.container():
-                            st.success(f"💾 **{ref_idx + 1}/{len(products)} refs processadas**")
-                            st.download_button(
-                                label=f"📥 Download Parcial ({ref_idx + 1}/{len(products)} refs)",
-                                data=partial_buffer,
-                                file_name=filename,
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                key=f"partial_{ref_idx}",
-                                use_container_width=True,
-                                help="Descarrega progresso atual"
-                            )
+                    historico.append(hist_line)
                 
                 # Fechar driver
                 driver.quit()
                 
-                # GUARDAR EXCEL FINAL EM SESSION STATE
+                # MOSTRAR RESULTADO FINAL (SEM RERUN)
+                st.divider()
+                st.success("✅ **Comparação Completa - Terminada!**")
+                
+                # Histórico
+                with st.expander("📋 Histórico de Processamento", expanded=True):
+                    for linha in historico:
+                        st.text(linha)
+                
+                st.divider()
+                
+                # DOWNLOAD FINAL
                 final_buffer = builder.to_buffer()
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 final_filename = f"comparador_{timestamp}.xlsx"
                 
-                st.session_state.comp_excel = final_buffer.getvalue()
-                st.session_state.comp_filename = final_filename
-                st.session_state.comp_processando = False
+                st.markdown('<div class="download-highlight">', unsafe_allow_html=True)
+                st.markdown("### 📥 Ficheiro Excel Completo!")
+                st.markdown(f"**{len(products)} referências processadas**")
+                
+                st.download_button(
+                    label="📥 DOWNLOAD EXCEL COMPLETO",
+                    data=final_buffer.getvalue(),
+                    file_name=final_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True
+                )
+                st.markdown('</div>', unsafe_allow_html=True)
                 
                 # Cleanup
                 tmp_path.unlink()
-                
-                # RERUN para mostrar download
-                st.rerun()
                 
         except Exception as e:
             st.error(f"❌ Erro: {e}")
@@ -590,7 +482,7 @@ else:  # "📊 Comparação Completa (Feed XML)"
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p><strong>Comparador de Preços v4.8.4 FIXED</strong> | PM Motorparts</p>
-    <p style='font-size: 0.9rem;'>✅ Session State ROBUSTO | 📥 Downloads Garantidos</p>
+    <p><strong>Comparador de Preços v4.8.5</strong> | PM Motorparts</p>
+    <p style='font-size: 0.9rem;'>✅ SEM st.rerun() | 📥 Download Imediato</p>
 </div>
 """, unsafe_allow_html=True)

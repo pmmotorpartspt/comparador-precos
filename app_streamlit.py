@@ -115,10 +115,6 @@ if modo == "🔍 Busca Rápida (1 Ref)":
     # Inicializar session state
     if 'busca_resultados' not in st.session_state:
         st.session_state.busca_resultados = None
-    if 'busca_excel' not in st.session_state:
-        st.session_state.busca_excel = None
-    if 'busca_filename' not in st.session_state:
-        st.session_state.busca_filename = None
     
     col1, col2 = st.columns([3, 1])
     
@@ -221,33 +217,12 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             driver.quit()
             progress_bar.empty()
             
-            # 💾 GUARDAR EM SESSION STATE
+            # 💾 GUARDAR EM SESSION STATE (só resultados)
             st.session_state.busca_resultados = results
             st.session_state.busca_ref = ref_input.strip()
             st.session_state.busca_ref_norm = ref_norm
             st.session_state.busca_your_price = your_price
             st.session_state.busca_stores = selected_stores
-            
-            # Gerar Excel imediatamente
-            found_count = sum(1 for r in results if r["Preço"] != "Não encontrado" and not r["Preço"].startswith("Erro"))
-            
-            if found_count > 0:
-                from core.excel import create_single_ref_excel
-                
-                excel_buffer = create_single_ref_excel(
-                    ref=ref_input.strip(),
-                    ref_norm=ref_norm,
-                    your_price=your_price,
-                    store_names=selected_stores,
-                    results=results
-                )
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"busca_{ref_norm}_{timestamp}.xlsx"
-                
-                # Guardar em session state
-                st.session_state.busca_excel = excel_buffer.getvalue()
-                st.session_state.busca_filename = filename
     
     # Mostrar resultados (de session state ou recém-processados)
     if st.session_state.busca_resultados is not None:
@@ -281,24 +256,44 @@ if modo == "🔍 Busca Rápida (1 Ref)":
         # 🆕 AUTO-DOWNLOAD + BOTÃO MANUAL
         st.divider()
         
-        if found_count > 0 and st.session_state.busca_excel is not None:
+        if found_count > 0:
+            # GERAR EXCEL (sempre, on-demand)
+            from core.excel import create_single_ref_excel
+            
+            # Recuperar dados do session state
+            ref = st.session_state.get('busca_ref', 'produto')
+            ref_norm = st.session_state.get('busca_ref_norm', 'produto')
+            your_price = st.session_state.get('busca_your_price', 0.0)
+            stores = st.session_state.get('busca_stores', [])
+            
+            excel_buffer = create_single_ref_excel(
+                ref=ref,
+                ref_norm=ref_norm,
+                your_price=your_price,
+                store_names=stores,
+                results=results
+            )
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"busca_{ref_norm}_{timestamp}.xlsx"
+            excel_bytes = excel_buffer.getvalue()
             
             # AUTO-DOWNLOAD via HTML/JS
-            excel_b64 = base64.b64encode(st.session_state.busca_excel).decode()
+            excel_b64 = base64.b64encode(excel_bytes).decode()
             
             html_download = f"""
             <script>
             // Auto-download quando página carrega
             window.onload = function() {{
                 // Só faz download se não fez ainda (evita repetir)
-                if (!sessionStorage.getItem('downloaded_{st.session_state.busca_filename}')) {{
+                if (!sessionStorage.getItem('downloaded_{filename}')) {{
                     const link = document.createElement('a');
                     link.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}';
-                    link.download = '{st.session_state.busca_filename}';
+                    link.download = '{filename}';
                     document.body.appendChild(link);
                     link.click();
                     document.body.removeChild(link);
-                    sessionStorage.setItem('downloaded_{st.session_state.busca_filename}', 'true');
+                    sessionStorage.setItem('downloaded_{filename}', 'true');
                 }}
             }};
             </script>
@@ -315,8 +310,8 @@ if modo == "🔍 Busca Rápida (1 Ref)":
             # Botão manual (fallback)
             st.download_button(
                 label="📥 Download Manual (se auto falhou)",
-                data=st.session_state.busca_excel,
-                file_name=st.session_state.busca_filename,
+                data=excel_bytes,
+                file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
                 help="Usa este se download automático não funcionou"
@@ -327,8 +322,6 @@ if modo == "🔍 Busca Rápida (1 Ref)":
         # Botão limpar resultados
         if st.button("🔄 Nova Busca", use_container_width=True):
             st.session_state.busca_resultados = None
-            st.session_state.busca_excel = None
-            st.session_state.busca_filename = None
             st.rerun()
 
 

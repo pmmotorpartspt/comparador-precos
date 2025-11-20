@@ -87,18 +87,6 @@ class ExcelBuilder:
             self.ws.column_dimensions[get_column_letter(col + 2)].width = 40  # URL
             col += 3
     
-    def add_product(self, product: FeedProduct, 
-                   store_results: Dict[str, Optional[Dict]]):
-        """
-        Adiciona linha de produto. (Alias para add_product_row)
-        
-        Args:
-            product: FeedProduct do feed
-            store_results: Dict {store_name: result_dict ou None}
-                result_dict tem: url, price_text, price_num, confidence
-        """
-        self.add_product_row(product, store_results)
-    
     def add_product_row(self, product: FeedProduct, 
                        store_results: Dict[str, Optional[Dict]]):
         """
@@ -146,6 +134,32 @@ class ExcelBuilder:
         
         # Aplicar formatação
         self._format_row(row_num, len(self.store_names))
+    
+    def add_product(self, product: FeedProduct, 
+                   store_results: Dict[str, Optional[Dict]]):
+        """
+        Alias para add_product_row (compatibilidade).
+        """
+        return self.add_product_row(product, store_results)
+    
+    def to_buffer(self):
+        """
+        Retorna Excel como BytesIO buffer (para Streamlit download).
+        
+        Returns:
+            BytesIO buffer com Excel
+        """
+        import io
+        
+        # Congelar primeira linha (headers)
+        self.ws.freeze_panes = "A2"
+        
+        # Salvar em buffer
+        buffer = io.BytesIO()
+        self.wb.save(buffer)
+        buffer.seek(0)
+        
+        return buffer
     
     def _format_row(self, row_num: int, num_stores: int):
         """
@@ -220,24 +234,6 @@ class ExcelBuilder:
         
         # Salvar
         self.wb.save(output_path)
-    
-    def to_buffer(self):
-        """
-        Salva workbook em BytesIO (para download no Streamlit).
-        
-        Returns:
-            BytesIO com o conteúdo do Excel
-        """
-        from io import BytesIO
-        
-        # Congelar primeira linha (headers)
-        self.ws.freeze_panes = "A2"
-        
-        # Salvar em buffer
-        buffer = BytesIO()
-        self.wb.save(buffer)
-        buffer.seek(0)
-        return buffer
 
 
 def build_excel(products: List[FeedProduct],
@@ -281,70 +277,97 @@ def build_excel(products: List[FeedProduct],
 
 
 def create_single_ref_excel(ref: str, ref_norm: str, your_price: float,
-                            store_names: List[str], 
-                            results: List[Dict]) -> 'BytesIO':
+                           store_names: List[str], results: List[Dict]) -> object:
     """
-    Cria Excel para uma única referência (usado na Busca Rápida).
+    Cria Excel para busca rápida de uma única referência.
     
     Args:
         ref: Referência original
         ref_norm: Referência normalizada
-        your_price: Teu preço
-        store_names: Lista de nomes das lojas
-        results: Lista de dicts com resultados da busca
-            [{"Loja": "WRS", "Preço": "€42.50", "Diferença": "-6.7%", "URL": "..."}]
+        your_price: Preço do utilizador (opcional)
+        store_names: Lista de lojas pesquisadas
+        results: Lista de dicts com resultados
     
     Returns:
-        BytesIO com Excel gerado
+        BytesIO buffer com Excel
     """
-    from io import BytesIO
-    from .feed import FeedProduct
+    import io
     
-    # Criar produto fake para usar no builder
-    product = FeedProduct(
-        id="1",
-        title=f"Busca: {ref}",
-        link="",
-        price_text=f"€{your_price:.2f}" if your_price > 0 else "—",
-        price_num=your_price if your_price > 0 else None,
-        ref_raw=ref,
-        ref_norm=ref_norm,
-        ref_parts=[ref_norm]
-    )
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Busca Rápida"
     
-    # Montar store_results a partir dos resultados
-    store_results = {}
-    for result_dict in results:
-        store_name = result_dict["Loja"]
+    # Estilos
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    
+    thin_border = Side(border_style="thin", color="CCCCCC")
+    border = Border(left=thin_border, right=thin_border, top=thin_border, bottom=thin_border)
+    
+    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    gray_fill = PatternFill(start_color="F0F0F0", end_color="F0F0F0", fill_type="solid")
+    
+    # Headers
+    headers = ["Loja", "Preço", "Diferença", "Confiança", "URL"]
+    ws.append(headers)
+    
+    for col in range(1, 6):
+        cell = ws.cell(1, col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = border
+    
+    # Larguras
+    ws.column_dimensions['A'].width = 18  # Loja
+    ws.column_dimensions['B'].width = 15  # Preço
+    ws.column_dimensions['C'].width = 15  # Diferença
+    ws.column_dimensions['D'].width = 12  # Confiança
+    ws.column_dimensions['E'].width = 50  # URL
+    
+    # Dados
+    for result in results:
+        ws.append([
+            result["Loja"],
+            result["Preço"],
+            result["Diferença"],
+            result["Confiança"],
+            result["URL"]
+        ])
         
-        # Converter para formato esperado pelo builder
-        if result_dict["Preço"] != "Não encontrado" and not result_dict["Preço"].startswith("Erro"):
-            # Parse do preço
-            price_text = result_dict["Preço"]
-            try:
-                # Extrair número do preço (remover €, espaços, etc)
-                price_num = float(price_text.replace("€", "").replace(",", ".").strip())
-            except:
-                price_num = None
-            
-            store_results[store_name.lower().replace(" ", "")] = {
-                "url": result_dict.get("URL", ""),
-                "price_text": price_text,
-                "price_num": price_num,
-                "confidence": 1.0
-            }
-        else:
-            # Não encontrado
-            store_results[store_name.lower().replace(" ", "")] = None
+        row_num = ws.max_row
+        
+        # Aplicar borders
+        for col in range(1, 6):
+            cell = ws.cell(row_num, col)
+            cell.border = border
+            cell.alignment = Alignment(vertical="center")
+        
+        # Formatação condicional
+        price_cell = ws.cell(row_num, 2)
+        if result["Preço"] == "Não encontrado":
+            price_cell.fill = gray_fill
+        elif result["Preço"].startswith("Erro"):
+            price_cell.fill = red_fill
+        
+        # URL como hyperlink
+        url_cell = ws.cell(row_num, 5)
+        if url_cell.value and url_cell.value.startswith("http"):
+            url_cell.hyperlink = url_cell.value
+            url_cell.font = Font(color="0563C1", underline="single")
+            url_cell.value = "🔗 Ver produto"
     
-    # Criar builder
-    store_keys = [name.lower().replace(" ", "") for name in store_names]
-    builder = ExcelBuilder(store_keys)
-    builder._create_headers()
-    builder.add_product(product, store_results)
+    # Congelar headers
+    ws.freeze_panes = "A2"
     
-    # Retornar buffer
-    return builder.to_buffer()
+    # Salvar em buffer
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    
+    return buffer
 
 
 # ============================================================================

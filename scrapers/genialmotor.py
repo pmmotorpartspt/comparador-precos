@@ -8,6 +8,9 @@ Estratégia (do código original que funciona):
 2. Se página de busca já é produto → valida
 3. Senão: extrai links candidatos, visita até 3-4 URLs
 4. Para no primeiro match válido
+
+CORREÇÃO v4.2: Fallback para pegar todos os links de produtos quando
+não encontra candidatos específicos (ex: SPM04D onde a ref só aparece num badge)
 """
 import re
 from typing import Optional, List, Dict
@@ -210,6 +213,9 @@ class GenialMotorScraper(BaseScraper):
         """
         Extrai URLs candidatos da página de resultados.
         
+        CORREÇÃO v4.2: Se não encontrar candidatos específicos (ref no link/URL),
+        faz fallback para pegar TODOS os links de produtos e deixa a validação decidir.
+        
         Args:
             html: HTML da página de busca
             ref_parts: Partes da referência procurada
@@ -221,7 +227,7 @@ class GenialMotorScraper(BaseScraper):
         soup = BeautifulSoup(html, "lxml")
         candidates = []
         
-        # Procurar links que mencionem as partes da ref
+        # MÉTODO 1: Procurar links que mencionem as partes da ref (método original)
         for a in soup.find_all("a", href=True):
             href = a["href"]
             
@@ -260,6 +266,42 @@ class GenialMotorScraper(BaseScraper):
                        norm_token(combo) in norm_token(url_upper):
                         candidates.append(url)
                         break
+        
+        # MÉTODO 2 (FALLBACK): Se não encontrou candidatos, pegar TODOS os links de produtos
+        if not candidates:
+            # Procurar padrões típicos de URLs de produtos do GenialMotor
+            product_patterns = [
+                "/product",
+                "/p-",
+                "/item",
+                "-p.html",
+                ".html"
+            ]
+            
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                
+                # Converter para URL absoluto
+                if href.startswith("http"):
+                    url = href
+                else:
+                    url = self.base_url.rstrip("/") + "/" + href.lstrip("/")
+                
+                # Filtrar URLs irrelevantes
+                if any(x in url.lower() for x in ["/cart", "/login", "/wishlist", "/compare", "/search", "/category", "/brand"]):
+                    continue
+                
+                # Verificar se é link de produto
+                is_product_link = any(pattern in url.lower() for pattern in product_patterns)
+                
+                # Ou se tem imagem de produto próxima
+                if not is_product_link:
+                    parent = a.parent
+                    if parent and parent.find("img"):
+                        is_product_link = True
+                
+                if is_product_link:
+                    candidates.append(url)
         
         # Remover duplicados mantendo ordem
         seen = set()

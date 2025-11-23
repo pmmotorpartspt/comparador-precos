@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 scrapers/genialmotor.py
-Scraper para GenialMotor.it - COM DEBUG
+Scraper para GenialMotor.it
 """
 import re
 from typing import Optional, List, Dict
@@ -65,16 +65,11 @@ class GenialMotorScraper(BaseScraper):
         
         candidate_urls = self._extract_candidate_urls(html, ref_parts, driver.current_url)
         
-        # DEBUG - MOSTRA NO STREAMLIT
-        try:
-            import streamlit as st
-            st.write(f"🔍 [DEBUG GenialMotor] Ref procurada: {ref_raw if ref_raw else ref_parts}")
-            st.write(f"🔍 [DEBUG GenialMotor] URLs candidatos: {len(candidate_urls)}")
-            if candidate_urls:
-                for i, u in enumerate(candidate_urls[:3], 1):
-                    st.write(f"   [{i}] {u}")
-        except:
-            pass
+        print(f"[GenialMotor DEBUG] Ref: {ref_raw if ref_raw else ref_parts}")
+        print(f"[GenialMotor DEBUG] Candidatos: {len(candidate_urls)}")
+        if candidate_urls:
+            for i, u in enumerate(candidate_urls[:3], 1):
+                print(f"[GenialMotor DEBUG]   [{i}] {u[:80]}")
         
         max_urls = MAX_URLS_COMPOSITE if len(ref_parts) > 1 else MAX_URLS_SIMPLE
         candidate_urls = candidate_urls[:max_urls]
@@ -169,10 +164,7 @@ class GenialMotorScraper(BaseScraper):
     
     def _extract_candidate_urls(self, html: str, ref_parts: List[str], 
                                current_url: str) -> List[str]:
-        """
-        Extrai URLs candidatos.
-        FALLBACK: Se não encontrar específicos, pega TODOS os produtos.
-        """
+        """Extrai URLs candidatos. FALLBACK: pega todos os produtos se não encontrar específicos."""
         soup = BeautifulSoup(html, "lxml")
         candidates_specific = []
         all_product_links = []

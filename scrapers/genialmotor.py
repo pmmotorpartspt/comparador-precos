@@ -3,14 +3,9 @@
 scrapers/genialmotor.py
 Scraper para GenialMotor.it
 
-Estratégia (do código original que funciona):
-1. Busca direta: /en/search?s=REF
-2. Se página de busca já é produto → valida
-3. Senão: extrai links candidatos, visita até 3-4 URLs
-4. Para no primeiro match válido
-
-CORREÇÃO v4.2: Fallback para pegar todos os links de produtos quando
-não encontra candidatos específicos (ex: SPM04D onde a ref só aparece num badge)
+VERSÃO 4.2.1 - CORREÇÃO COMPLETA
+Problema: Refs como SPM04D aparecem em badges, não nos links
+Solução: Fallback para pegar TODOS os produtos quando não encontra candidatos específicos
 """
 import re
 from typing import Optional, List, Dict
@@ -133,8 +128,6 @@ class GenialMotorScraper(BaseScraper):
         """
         Extrai identificadores estruturados da página (SKU, MPN, códigos).
         
-        Baseado no código original GenialMotor que funciona.
-        
         Args:
             html: HTML da página
             
@@ -213,8 +206,9 @@ class GenialMotorScraper(BaseScraper):
         """
         Extrai URLs candidatos da página de resultados.
         
-        CORREÇÃO v4.2: Se não encontrar candidatos específicos (ref no link/URL),
-        faz fallback para pegar TODOS os links de produtos e deixa a validação decidir.
+        ESTRATÉGIA:
+        1. Procura links que mencionem a ref (método original)
+        2. Se não encontrar NENHUM, pega TODOS os links de produtos (FALLBACK)
         
         Args:
             html: HTML da página de busca
@@ -225,9 +219,12 @@ class GenialMotorScraper(BaseScraper):
             Lista de URLs candidatos (sem duplicados)
         """
         soup = BeautifulSoup(html, "lxml")
-        candidates = []
+        candidates_specific = []
+        all_product_links = []
         
-        # MÉTODO 1: Procurar links que mencionem as partes da ref (método original)
+        from core.normalization import norm_token
+        
+        # Percorrer TODOS os links
         for a in soup.find_all("a", href=True):
             href = a["href"]
             
@@ -238,24 +235,28 @@ class GenialMotorScraper(BaseScraper):
                 url = self.base_url.rstrip("/") + "/" + href.lstrip("/")
             
             # Filtrar URLs irrelevantes
-            if any(x in url.lower() for x in ["/cart", "/login", "/wishlist", "/compare", "/search"]):
+            if any(x in url.lower() for x in ["/cart", "/login", "/wishlist", "/compare", "/search", "/category", "/brand", "/contact"]):
                 continue
             
-            # Verificar se URL ou texto do link contém partes da ref
+            # Verificar se é link de produto (guardar para fallback)
+            is_product = any(pattern in url.lower() for pattern in ["/product", "-p-", "-p.html", ".html"]) or \
+                        (a.parent and a.parent.find("img"))
+            
+            if is_product:
+                all_product_links.append(url)
+            
+            # Verificar se link menciona a ref (método específico)
             link_text = (a.get_text(" ", strip=True) or "").upper()
             url_upper = url.upper()
-            
-            from core.normalization import norm_token
             
             if len(ref_parts) == 1:
                 # Ref simples: procurar a parte
                 target = norm_token(ref_parts[0])
                 if target in norm_token(link_text) or target in norm_token(url_upper):
-                    candidates.append(url)
+                    candidates_specific.append(url)
             
             else:
                 # Ref composta: procurar qualquer combinação
-                # Ex: "H085LR1X+ABC123" ou "ABC123+H085LR1X"
                 part_combos = [
                     "+".join(ref_parts),
                     "+".join(reversed(ref_parts))
@@ -264,44 +265,20 @@ class GenialMotorScraper(BaseScraper):
                 for combo in part_combos:
                     if norm_token(combo) in norm_token(link_text) or \
                        norm_token(combo) in norm_token(url_upper):
-                        candidates.append(url)
+                        candidates_specific.append(url)
                         break
         
-        # MÉTODO 2 (FALLBACK): Se não encontrou candidatos, pegar TODOS os links de produtos
-        if not candidates:
-            # Procurar padrões típicos de URLs de produtos do GenialMotor
-            product_patterns = [
-                "/product",
-                "/p-",
-                "/item",
-                "-p.html",
-                ".html"
-            ]
-            
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                
-                # Converter para URL absoluto
-                if href.startswith("http"):
-                    url = href
-                else:
-                    url = self.base_url.rstrip("/") + "/" + href.lstrip("/")
-                
-                # Filtrar URLs irrelevantes
-                if any(x in url.lower() for x in ["/cart", "/login", "/wishlist", "/compare", "/search", "/category", "/brand"]):
-                    continue
-                
-                # Verificar se é link de produto
-                is_product_link = any(pattern in url.lower() for pattern in product_patterns)
-                
-                # Ou se tem imagem de produto próxima
-                if not is_product_link:
-                    parent = a.parent
-                    if parent and parent.find("img"):
-                        is_product_link = True
-                
-                if is_product_link:
-                    candidates.append(url)
+        # DECISÃO: Usar específicos ou fallback?
+        if candidates_specific:
+            # Encontrou candidatos específicos - usar esses
+            candidates = candidates_specific
+        elif all_product_links:
+            # FALLBACK: Não encontrou específicos, usar TODOS os produtos
+            # Limitar a um máximo razoável (10 produtos)
+            candidates = all_product_links[:10]
+        else:
+            # Não encontrou nada
+            candidates = []
         
         # Remover duplicados mantendo ordem
         seen = set()
@@ -326,9 +303,9 @@ if __name__ == "__main__":
     driver = build_driver(headless=True)
     
     try:
-        # Teste com ref fake
-        print("Testando busca por 'H.085.LR1X'...")
-        result = scraper.search_product(driver, ["H085LR1X"])
+        # Teste com ref que existe
+        print("Testando busca por 'SPM04D'...")
+        result = scraper.search_product(driver, ["SPM04D"], ref_raw="SPM04D")
         
         if result:
             print(f"✅ Produto encontrado!")

@@ -86,6 +86,12 @@ class GenialMotorScraper(BaseScraper):
         
         # Não é match direto - extrair links candidatos
         candidate_urls = self._extract_candidate_urls(html, ref_parts, driver.current_url)
+
+        import streamlit as st
+            st.write(f"🔍 [GenialMotor DEBUG] Ref procurada: {ref_raw if ref_raw else ref_parts}")
+            st.write(f"🔍 [GenialMotor DEBUG] URLs candidatos encontrados: {len(candidate_urls)}")
+                if candidate_urls:
+                    st.write(f"🔍 [GenialMotor DEBUG] Primeiro URL: {candidate_urls[0]}")
         
         # Limitar número de URLs a visitar
         max_urls = MAX_URLS_COMPOSITE if len(ref_parts) > 1 else MAX_URLS_SIMPLE

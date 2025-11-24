@@ -2,6 +2,7 @@
 """
 scrapers/base.py
 Classe base abstrata para todos os scrapers de lojas.
+v4.9.1 - Corrigido parser de preços para Black Friday
 
 Cada loja herda BaseScraper e implementa apenas:
 - search_product() - como buscar produto naquela loja específica
@@ -12,92 +13,57 @@ from dataclasses import dataclass
 
 from selenium import webdriver
 
-from pathlib import Path
+# Imports do core (assumindo estrutura: comparador_v4/core/ e comparador_v4/scrapers/)
 import sys
+from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.cache import StoreCache
 from core.validation import ValidationResult
-from core.normalization import normalize_ref_for_cache
-
-import re
 
 
 @dataclass
 class SearchResult:
-    """
-    Resultado de uma pesquisa numa loja:
-    - url: URL final do produto
-    - price_text: preço como string visível
-    - price_num: preço convertido para float (quando possível)
-    - validation: resultado da validação de referência
-    """
-    url: str
-    price_text: str
-    price_num: Optional[float]
-    validation: ValidationResult
-
+    """Resultado de uma busca de produto"""
+    url: str                      # URL do produto encontrado
+    price_text: str               # Preço formatado (ex: "€ 365.50")
+    price_num: Optional[float]    # Preço numérico (para cálculos)
+    validation: ValidationResult  # Resultado da validação
+    
+    @property
+    def confidence(self) -> float:
+        """Atalho para confiança da validação"""
+        return self.validation.confidence
+    
     def to_dict(self) -> Dict:
+        """Converte para dicionário (para cache e Excel)"""
         return {
             "url": self.url,
             "price_text": self.price_text,
             "price_num": self.price_num,
-            "validation": self.validation.to_dict() if self.validation else None,
+            "confidence": self.confidence,
         }
-
-
-def parse_price_to_float(price_text: str) -> Optional[float]:
-    """
-    Converte string de preço em float.
-    
-    Trata múltiplos números na mesma string (ex: preço antigo + preço atual)
-    escolhendo sempre o ÚLTIMO número detetado, que na maioria dos sites
-    corresponde ao preço atual.
-    
-    Args:
-        price_text: Ex: "€ 365.50", "1.234,56 EUR", "De 200,00€ por 150,00€"
-        
-    Returns:
-        Float ou None
-    """
-    if not price_text:
-        return None
-    
-    # Remove símbolos de moeda mais comuns
-    s = price_text.replace("€", " ").replace("EUR", " ")
-    
-    # Manter apenas dígitos, vírgula, ponto, espaços e hífen
-    s = re.sub(r"[^\d,\.\s-]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    
-    # Extrair todos os blocos numéricos
-    nums = re.findall(r"\d+[.,]?\d*", s)
-    if not nums:
-        return None
-    
-    # Política: usar sempre o último número (normalmente o preço atual)
-    raw = nums[-1]
-    
-    # Detetar formato europeu (vírgula como separador decimal)
-    if "," in raw and raw.count(",") == 1 and raw.rfind(",") > raw.rfind("."):
-        # Ex: "1.234,56" → vírgula é decimal
-        raw = raw.replace(".", "").replace(",", ".")
-    else:
-        # Formato americano ou sem ambiguidade
-        raw = raw.replace(",", "")
-    
-    try:
-        return float(raw)
-    except ValueError:
-        return None
 
 
 class BaseScraper(ABC):
     """
-    Classe base abstrata para scrapers de lojas.
+    Classe base para scrapers de lojas.
+    
+    Providencia:
+    - Sistema de cache automático
+    - Estatísticas de performance
+    - Interface uniforme
+    
+    Cada loja herda e implementa:
+    - search_product() - lógica específica de busca
     """
-
+    
     def __init__(self, name: str, base_url: str):
+        """
+        Args:
+            name: Nome da loja (ex: "wrs", "omniaracing")
+            base_url: URL base da loja
+        """
         self.name = name
         self.base_url = base_url
         self.cache = StoreCache(name)
@@ -113,24 +79,31 @@ class BaseScraper(ABC):
         }
     
     @abstractmethod
-    def search_product(self, driver: webdriver.Chrome, ref_parts: List[str], ref_raw: str) -> Optional[SearchResult]:
+    def search_product(self, driver: webdriver.Chrome, 
+                      ref_parts: List[str], 
+                      ref_raw: str = "") -> Optional[SearchResult]:
         """
-        Implementado em cada scraper concreto.
+        Busca produto na loja (IMPLEMENTAR em cada scraper).
         
         Args:
-            driver: instância de WebDriver
-            ref_parts: lista de partes normalizadas da referência
-            ref_raw: referência original (para pesquisa, com hífens se necessário)
-        
+            driver: WebDriver do Selenium (já inicializado)
+            ref_parts: Lista de partes normalizadas (ex: ["H085LR1X"])
+            ref_raw: Referência original com hífens (ex: "H.085.LR1X" ou "P-HF1595")
+            
         Returns:
-            SearchResult ou None se não encontrar produto válido
+            SearchResult se encontrado e válido, None se não encontrado
+            
+        Nota:
+            Esta função NÃO deve lidar com cache - isso é automático!
+            Só implementar a lógica de busca específica da loja.
+            Use ref_raw para pesquisar (mantém hífens) e ref_parts para validar.
         """
-        raise NotImplementedError
+        raise NotImplementedError("Cada scraper deve implementar search_product()")
     
     def search_with_cache(self, driver: webdriver.Chrome,
-                          ref_norm: str, ref_parts: List[str],
-                          ref_raw: str = "",
-                          use_cache: bool = True) -> Optional[SearchResult]:
+                         ref_norm: str, ref_parts: List[str],
+                         ref_raw: str = "",
+                         use_cache: bool = True) -> Optional[SearchResult]:
         """
         Wrapper que adiciona cache à busca.
         
@@ -140,7 +113,7 @@ class BaseScraper(ABC):
             ref_parts: Partes normalizadas (para validação)
             ref_raw: Referência original (para pesquisar com hífens)
             use_cache: Se False, ignora cache e força busca
-        
+            
         Returns:
             SearchResult se encontrado, None se não
         """
@@ -152,13 +125,15 @@ class BaseScraper(ABC):
             if cached:
                 self.stats["cache_hits"] += 1
                 
+                # Converter CacheEntry para SearchResult
+                # (ValidationResult não é guardado em cache, criar dummy)
                 from core.validation import ValidationResult, MatchType
                 dummy_validation = ValidationResult(
                     is_valid=bool(cached.url),
                     match_type=MatchType.EXACT_MATCH,
                     confidence=cached.confidence,
                     matched_parts=[ref_norm] if cached.url else [],
-                    reason="From cache",
+                    reason="From cache"
                 )
                 
                 if cached.url:
@@ -166,9 +141,10 @@ class BaseScraper(ABC):
                         url=cached.url,
                         price_text=cached.price_text or "",
                         price_num=cached.price_num,
-                        validation=dummy_validation,
+                        validation=dummy_validation
                     )
                 else:
+                    # Cache hit mas produto não foi encontrado na última vez
                     self.stats["not_found"] += 1
                     return None
         
@@ -181,24 +157,26 @@ class BaseScraper(ABC):
             if result:
                 self.stats["found"] += 1
                 
+                # Guardar em cache
                 if use_cache:
                     self.cache.put(
                         ref_norm=ref_norm,
                         url=result.url,
                         price_text=result.price_text,
                         price_num=result.price_num,
-                        confidence=result.validation.confidence,
+                        confidence=result.confidence
                     )
             else:
                 self.stats["not_found"] += 1
                 
+                # Guardar "não encontrado" em cache (evita buscas repetidas)
                 if use_cache:
                     self.cache.put(
                         ref_norm=ref_norm,
                         url=None,
                         price_text=None,
                         price_num=None,
-                        confidence=0.0,
+                        confidence=0.0
                     )
             
             return result
@@ -209,10 +187,16 @@ class BaseScraper(ABC):
             return None
     
     def get_stats(self) -> Dict:
-        """Retorna estatísticas do scraper."""
+        """
+        Retorna estatísticas do scraper.
+        
+        Returns:
+            Dict com estatísticas de performance
+        """
         stats = self.stats.copy()
         stats["store"] = self.name
         
+        # Calcular taxas
         if stats["total_searches"] > 0:
             stats["hit_rate"] = stats["cache_hits"] / stats["total_searches"]
             stats["success_rate"] = stats["found"] / stats["total_searches"]
@@ -227,5 +211,238 @@ class BaseScraper(ABC):
         self.cache.save()
     
     def clear_cache(self):
-        """Limpa cache"""
+        """Limpa cache (útil para --refresh)"""
         self.cache.clear()
+        self.cache.save()
+    
+    def __repr__(self):
+        return f"{self.__class__.__name__}(name={self.name})"
+
+
+# ============================================================================
+# HELPER: Extração de Preço (comum a todas lojas)
+# ============================================================================
+
+import re
+import json
+from bs4 import BeautifulSoup
+
+PRICE_REGEX = re.compile(r"(€|\bEUR\b)\s*([\d\.\,]+)")
+
+
+def extract_price_from_html(html: str) -> Optional[str]:
+    """
+    Extrai preço de HTML (tenta múltiplos métodos).
+    
+    Ordem de prioridade:
+    1. JSON-LD structured data (Product schema)
+    2. Meta tag itemprop="price"
+    3. Regex no texto
+    
+    Args:
+        html: HTML da página
+        
+    Returns:
+        Preço formatado (ex: "€ 365.50") ou None
+    """
+    soup = BeautifulSoup(html, "lxml")
+    
+    # Método 1: JSON-LD
+    for script_tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script_tag.string)
+            
+            # Procurar recursivamente por "price" em @type Product ou Offer
+            def find_price(obj):
+                if isinstance(obj, dict):
+                    # Se tem @type Product ou Offer, procurar price/offers
+                    if obj.get("@type") in ["Product", "Offer", "AggregateOffer"]:
+                        # Price direto
+                        if "price" in obj:
+                            return f"€ {obj['price']}"
+                        
+                        # Offers
+                        offers = obj.get("offers")
+                        if isinstance(offers, dict):
+                            price = offers.get("price")
+                            currency = offers.get("priceCurrency", "EUR")
+                            if price:
+                                return f"{currency} {price}"
+                    
+                    # Recursão em todos valores
+                    for value in obj.values():
+                        result = find_price(value)
+                        if result:
+                            return result
+                
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = find_price(item)
+                        if result:
+                            return result
+                
+                return None
+            
+            price = find_price(data)
+            if price:
+                return price
+        
+        except Exception:
+            continue
+    
+    # Método 2: Meta itemprop
+    meta = soup.find(attrs={"itemprop": "price"})
+    if meta:
+        content = meta.get("content") or meta.get_text(strip=True)
+        if content:
+            return f"€ {content}"
+    
+    # Método 3: Regex no texto
+    text = soup.get_text(" ", strip=True)
+    match = PRICE_REGEX.search(text)
+    if match:
+        return f"{match.group(1)} {match.group(2)}"
+    
+    return None
+
+
+def parse_price_to_float(price_text: str) -> Optional[float]:
+    """
+    Converte string de preço em float.
+    v4.9.1: Melhorado para lidar com preços promocionais (Black Friday)
+    
+    Args:
+        price_text: Ex: "€ 365.50", "1.234,56 EUR", "~~200€~~ 150€"
+        
+    Returns:
+        Float ou None
+    """
+    if not price_text:
+        return None
+    
+    # NOVO: Detectar preços promocionais e pegar o último/atual
+    text_lower = price_text.lower()
+    
+    # Padrões de preço promocional
+    if any(marker in price_text for marker in ["~~", "Agora", "agora", "Por:", "por:", "→", "Antes"]):
+        # Tem marcador de promoção - vamos pegar o último preço
+        
+        # Extrair todos os números que parecem preços
+        price_pattern = r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)'
+        matches = re.findall(price_pattern, price_text)
+        
+        if matches:
+            # Pegar o último match (preço atual)
+            last_price = matches[-1]
+            return _parse_single_price_value(last_price)
+    
+    # Se tem "Desde" ou "A partir de", pegar o único preço mencionado
+    if any(marker in text_lower for marker in ["desde", "a partir de", "from"]):
+        price_pattern = r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)'
+        matches = re.findall(price_pattern, price_text)
+        if matches:
+            return _parse_single_price_value(matches[0])
+    
+    # Se tem "De:" e "Por:", pegar o que vem depois de "Por:"
+    if "de:" in text_lower and "por:" in text_lower:
+        # Dividir e pegar a parte após "Por:"
+        parts = re.split(r'\bpor:\s*', price_text, flags=re.IGNORECASE)
+        if len(parts) > 1:
+            price_pattern = r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)'
+            matches = re.findall(price_pattern, parts[1])
+            if matches:
+                return _parse_single_price_value(matches[0])
+    
+    # Caso normal: processar o texto completo
+    return _parse_single_price_value(price_text)
+
+
+def _parse_single_price_value(price_str: str) -> Optional[float]:
+    """
+    Helper: Parse de um único valor de preço.
+    
+    Args:
+        price_str: String com um único preço
+        
+    Returns:
+        Float ou None
+    """
+    if not price_str:
+        return None
+    
+    # Remove símbolos de moeda e códigos
+    s = price_str
+    s = re.sub(r'[€$£¥₹¢]', '', s)
+    s = re.sub(r'(EUR|USD|GBP)', '', s, flags=re.IGNORECASE)
+    s = s.strip()
+    
+    if not s:
+        return None
+    
+    # Detectar formato baseado na posição de vírgula e ponto
+    has_comma = ',' in s
+    has_dot = '.' in s
+    
+    if has_comma and has_dot:
+        # Tem ambos - o que vier por último é o separador decimal
+        last_comma = s.rfind(',')
+        last_dot = s.rfind('.')
+        
+        if last_comma > last_dot:
+            # Vírgula é decimal (formato europeu: 1.234,56)
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            # Ponto é decimal (formato americano: 1,234.56)
+            s = s.replace(',', '')
+    elif has_comma:
+        # Só tem vírgula - verificar contexto
+        comma_count = s.count(',')
+        if comma_count == 1:
+            # Uma vírgula - verificar se é decimal ou milhares
+            parts = s.split(',')
+            if len(parts) == 2 and len(parts[1]) <= 2:
+                # Provavelmente decimal (ex: 123,45)
+                s = s.replace(',', '.')
+            else:
+                # Provavelmente milhares (ex: 1,234)
+                s = s.replace(',', '')
+        else:
+            # Múltiplas vírgulas - são milhares
+            s = s.replace(',', '')
+    
+    # Limpar espaços (podem ser separadores de milhares)
+    s = s.replace(' ', '')
+    
+    try:
+        value = float(s)
+        # Validação de sanidade
+        if value > 100000:  # Mais de 100k€ é suspeito para peças de moto
+            return None
+        return value
+    except (ValueError, TypeError):
+        return None
+
+
+# ============================================================================
+# TESTES
+# ============================================================================
+
+if __name__ == "__main__":
+    print("=== Teste Parse Preços Black Friday ===\n")
+    
+    test_cases = [
+        ("€ 150.00", 150.0),
+        ("1.234,56 EUR", 1234.56),
+        ("~~200,00€~~ 150,00€", 150.0),
+        ("De: 89.90 Por: 69.90", 69.90),
+        ("Antes 200€ - Agora 150€", 150.0),
+        ("Desde 45,00€", 45.0),
+        ("$1,234.56", 1234.56),
+        ("€ 1 234,56", 1234.56),
+        ("200,00 150,00", 150.0),  # Caso problemático original
+    ]
+    
+    for price_str, expected in test_cases:
+        result = parse_price_to_float(price_str)
+        status = "✅" if result == expected else "❌"
+        print(f"{status} '{price_str}' → {result} (esperado: {expected})")

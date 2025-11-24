@@ -1,341 +1,265 @@
 # -*- coding: utf-8 -*-
 """
 core/feed.py
-Parser do feed XML de produtos.
-Extrai refs da description, normaliza, prepara para comparação.
+Parser de feeds XML com lógica para busca automática de referência.
+v4.9.1 - Corrigido parser de preços para Black Friday
 """
 from pathlib import Path
-from typing import List, Dict, Optional
-from xml.etree import ElementTree as ET
+from typing import List, Optional, Union
+from dataclasses import dataclass
+from datetime import datetime
+import xml.etree.ElementTree as ET
 import re
 
-from .normalization import normalize_ref, extract_ref_from_description
-from config import FEED_PATH
+from .normalization import normalize_reference, extract_ref_from_description
 
 
-class FeedParseError(Exception):
-    """Erro ao parsear feed"""
-    pass
-
-
-class InvalidFeedStructure(Exception):
-    """Estrutura inesperada no feed"""
-    pass
-
-
-class MissingReferenceError(Exception):
-    """Produto sem referência do fabricante"""
-    pass
-
-
-class InvalidReferenceError(Exception):
-    """Referência não pôde ser normalizada"""
-    pass
-
-
-class EmptyFeedError(Exception):
-    """Feed sem produtos válidos"""
-    pass
-
-
-class DuplicateIdWarning(Warning):
-    """ID duplicado no feed"""
-    pass
-
-
-class DuplicateRefWarning(Warning):
-    """Referência duplicada no feed"""
-    pass
-
-
-class PriceParseWarning(Warning):
-    """Falha ao parsear preço"""
-    pass
-
-
-class DescriptionWarning(Warning):
-    """Problemas na description"""
-    pass
-
-
-class LinkWarning(Warning):
-    """Problema com link do produto"""
-    pass
-
-
-class FeedStats:
-    """Estatísticas do feed"""
-
-    def __init__(self):
-        self.total_items = 0
-        self.valid_products = 0
-        self.missing_refs = 0
-        self.invalid_refs = 0
-        self.duplicate_ids = 0
-        self.duplicate_refs = 0
-        self.price_parse_errors = 0
-        self.description_warnings = 0
-        self.link_warnings = 0
-
-    def to_dict(self) -> Dict:
-        return {
-            "total_items": self.total_items,
-            "valid_products": self.valid_products,
-            "missing_refs": self.missing_refs,
-            "invalid_refs": self.invalid_refs,
-            "duplicate_ids": self.duplicate_ids,
-            "duplicate_refs": self.duplicate_refs,
-            "price_parse_errors": self.price_parse_errors,
-            "description_warnings": self.description_warnings,
-            "link_warnings": self.link_warnings,
-        }
-
-
-def feed_stats(products: List["FeedProduct"]) -> Dict:
-    """
-    Gera estatísticas simples a partir da lista de produtos final.
-    """
-    stats = FeedStats()
-    stats.total_items = len(products)
-    stats.valid_products = len(products)
-
-    unique_ids = set()
-    unique_refs = set()
-
-    for p in products:
-        if p.id in unique_ids:
-            stats.duplicate_ids += 1
-        else:
-            unique_ids.add(p.id)
-
-        if p.ref_norm in unique_refs:
-            stats.duplicate_refs += 1
-        else:
-            unique_refs.add(p.ref_norm)
-
-        if p.price_num is None:
-            stats.price_parse_errors += 1
-
-    return stats.to_dict()
+@dataclass
+class FeedProduct:
+    """Produto lido do feed XML."""
+    id: str
+    title: str
+    link: str
+    price_text: str
+    price_num: Optional[float]
+    ref_raw: str          # Referência original (com hífens/pontos)
+    ref_norm: str         # Referência normalizada (sem caracteres especiais)
+    ref_parts: List[str]  # Lista de partes para busca
 
 
 def parse_price(price_text: str) -> Optional[float]:
     """
     Extrai valor numérico de preço do feed.
+    v4.9.1: Melhorado para lidar com preços promocionais (Black Friday)
     
     Exemplos:
         "331.50 EUR" → 331.50
         "€ 125,99" → 125.99
         "1.234,56 EUR" → 1234.56
-        "De 200,00 EUR por 150,00 EUR" → 150.00
+        "~~200,00€~~ 150,00€" → 150.00 (pega o último/atual)
+        "De: 89.90 Por: 69.90" → 69.90
+        "Antes 200€ - Agora 150€" → 150.00
     
     Args:
         price_text: Preço como string
         
     Returns:
-        Valor float ou None se não conseguir parsear.
+        Valor float ou None se não conseguir parsear
     """
     if not price_text:
         return None
     
-    # Remove símbolos de moeda mais comuns
-    s = price_text.replace("€", " ").replace("EUR", " ")
+    # NOVO: Detectar preços promocionais e pegar o último/atual
+    text_lower = price_text.lower()
     
-    # Manter apenas dígitos, vírgula, ponto, espaços e hífen
-    s = re.sub(r"[^\d,\.\s-]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
+    # Padrões de preço promocional
+    if any(marker in price_text for marker in ["~~", "Agora", "agora", "Por:", "por:", "→"]):
+        # Tem marcador de promoção - vamos pegar o último preço
+        
+        # Extrair todos os números que parecem preços (com vírgula ou ponto decimal)
+        # Padrão: número com possível separador de milhares e decimal
+        price_pattern = r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)'
+        matches = re.findall(price_pattern, price_text)
+        
+        if matches:
+            # Pegar o último match (preço atual)
+            last_price = matches[-1]
+            
+            # Processar este preço individual
+            return _parse_single_price(last_price)
     
-    # Extrair todos os blocos numéricos
-    nums = re.findall(r"\d+[.,]?\d*", s)
-    if not nums:
+    # Se tem "Desde" ou "A partir de", pegar o único preço mencionado
+    if any(marker in text_lower for marker in ["desde", "a partir de", "from"]):
+        price_pattern = r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?)'
+        matches = re.findall(price_pattern, price_text)
+        if matches:
+            return _parse_single_price(matches[0])
+    
+    # Caso normal: processar o texto completo
+    return _parse_single_price(price_text)
+
+
+def _parse_single_price(price_str: str) -> Optional[float]:
+    """
+    Helper: Parse de um único valor de preço.
+    
+    Args:
+        price_str: String com um único preço
+        
+    Returns:
+        Float ou None
+    """
+    if not price_str:
+        return None
+        
+    # Remove símbolos de moeda e espaços
+    s = price_str
+    s = re.sub(r'[€$£¥₹¢]', '', s)  # Remove símbolos de moeda
+    s = re.sub(r'(EUR|USD|GBP)', '', s, flags=re.IGNORECASE)  # Remove códigos de moeda
+    s = s.strip()
+    
+    if not s:
         return None
     
-    # Política: usar sempre o último número (normalmente o preço atual)
-    raw = nums[-1]
+    # Detectar formato: Europeu vs Americano
+    # Europeu: 1.234,56 (ponto para milhares, vírgula para decimal)
+    # Americano: 1,234.56 (vírgula para milhares, ponto para decimal)
     
-    # Detetar formato: vírgula como decimal (europeu)
-    if "," in raw and raw.count(",") == 1 and raw.rfind(",") > raw.rfind("."):
-        # Formato europeu: ponto = separador milhares, vírgula = decimal
-        raw = raw.replace(".", "").replace(",", ".")
+    # Se tem tanto vírgula quanto ponto, ver qual vem por último
+    has_comma = ',' in s
+    has_dot = '.' in s
+    
+    if has_comma and has_dot:
+        # Tem ambos - o que vier por último é o separador decimal
+        last_comma = s.rfind(',')
+        last_dot = s.rfind('.')
+        
+        if last_comma > last_dot:
+            # Vírgula é decimal (formato europeu)
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            # Ponto é decimal (formato americano)
+            s = s.replace(',', '')
+    elif has_comma:
+        # Só tem vírgula
+        comma_count = s.count(',')
+        if comma_count == 1:
+            # Uma vírgula - verificar se é decimal ou milhares
+            parts = s.split(',')
+            if len(parts) == 2 and len(parts[1]) <= 2:
+                # Parece decimal (ex: 123,45)
+                s = s.replace(',', '.')
+            else:
+                # Parece milhares (ex: 1,234)
+                s = s.replace(',', '')
+        else:
+            # Múltiplas vírgulas - são milhares
+            s = s.replace(',', '')
+    # Se só tem ponto, deixa como está (formato americano)
+    
+    # Limpar espaços internos (alguns sites usam espaço como separador de milhares)
+    s = s.replace(' ', '')
+    
+    try:
+        value = float(s)
+        # Validação de sanidade - preços muito altos provavelmente são erros
+        if value > 100000:  # Mais de 100k€ é suspeito para peças de moto
+            return None
+        return value
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_feed(feed_path: Union[str, Path]) -> List[FeedProduct]:
+    """
+    Parse do feed.xml e extrai produtos com suas referências.
+    
+    1. Tenta campo <g:mpn> (mais confiável)
+    2. Se não tem, procura no <g:description> por "Ref Fabricante: XXX"
+    3. Se não encontrar, usa <g:id> como fallback
+    
+    Args:
+        feed_path: Caminho do feed.xml ou string com conteúdo XML
+        
+    Returns:
+        Lista de FeedProduct com refs normalizadas
+    """
+    products = []
+    
+    # Se receber string, assumir que é conteúdo XML
+    if isinstance(feed_path, str) and feed_path.strip().startswith('<?xml'):
+        root = ET.fromstring(feed_path)
     else:
-        # Formato americano ou sem ambiguidade
-        raw = raw.replace(",", "")
-    
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-class FeedProduct:
-    """
-    Representa um produto do feed, já com referência normalizada e separada.
-    """
-
-    __slots__ = (
-        "id",
-        "title",
-        "link",
-        "price_text",
-        "price_num",
-        "ref_raw",
-        "ref_norm",
-        "ref_parts",
-    )
-
-    def __init__(
-        self,
-        id: str,
-        title: str,
-        link: str,
-        price_text: str,
-        price_num: Optional[float],
-        ref_raw: str,
-        ref_norm: str,
-        ref_parts: List[str],
-    ):
-        self.id = id
-        self.title = title
-        self.link = link
-        self.price_text = price_text
-        self.price_num = price_num
-        self.ref_raw = ref_raw
-        self.ref_norm = ref_norm
-        self.ref_parts = ref_parts
-
-    def to_dict(self) -> Dict:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "link": self.link,
-            "price_text": self.price_text,
-            "price_num": self.price_num,
-            "ref_raw": self.ref_raw,
-            "ref_norm": self.ref_norm,
-            "ref_parts": self.ref_parts,
-        }
-
-    def __repr__(self):
-        return f"FeedProduct(id={self.id}, ref={self.ref_raw}, price={self.price_text})"
-
-
-def _get_text(el: Optional[ET.Element]) -> str:
-    """Helper para extrair texto limpo de um elemento XML."""
-    if el is None or el.text is None:
-        return ""
-    return el.text.strip()
-
-
-def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List["FeedProduct"]:
-    """
-    Lê o feed XML e devolve uma lista de FeedProduct prontos para comparação.
-
-    Regras:
-    - Só entram produtos com referência válida e normalizável.
-    - Referência vem da description (Ref. Fabricante, Ref do Fabricante, etc.).
-    - Price é lido do campo de preço e convertido para float se possível.
-    """
-    if not feed_path.exists():
-        raise FileNotFoundError(f"Feed não encontrado em: {feed_path}")
-
-    try:
+        # É um path
+        feed_path = Path(feed_path)
+        if not feed_path.exists():
+            print(f"[ERRO] Feed não encontrado: {feed_path}")
+            return products
+        
         tree = ET.parse(feed_path)
         root = tree.getroot()
-    except ET.ParseError as e:
-        raise FeedParseError(f"Erro ao parsear XML: {e}")
-
-    items = root.findall(".//item")
-    if not items:
-        raise EmptyFeedError("Nenhum item encontrado no feed")
-
-    products: List[FeedProduct] = []
-    seen_ids = set()
-    seen_refs = set()
-
-    for idx, item in enumerate(items):
-        if max_products and len(products) >= max_products:
-            break
-
-        # Campos obrigatórios básicos
-        id_el = item.find("./{*}id") or item.find("./id")
-        title_el = item.find("./title")
-        link_el = item.find("./link")
-        price_el = item.find("./{*}price") or item.find("./price")
-        desc_el = item.find("./description")
-
-        prod_id = _get_text(id_el)
-        title = _get_text(title_el)
-        link = _get_text(link_el)
-        price_text = _get_text(price_el)
-        description = _get_text(desc_el)
-
-        if not prod_id or not title or not link:
+    
+    # Namespaces comuns em feeds do Google
+    ns = {
+        'g': 'http://base.google.com/ns/1.0',
+        'atom': 'http://www.w3.org/2005/Atom'
+    }
+    
+    # Procurar items/entry no feed
+    items = root.findall('.//item') or root.findall('.//entry', ns)
+    
+    for item in items:
+        # ID do produto
+        id_elem = item.find('g:id', ns) or item.find('id')
+        if id_elem is None:
             continue
-
-        # Verificar IDs duplicados
-        if prod_id in seen_ids:
-            pass
-        else:
-            seen_ids.add(prod_id)
-
-        # Extrair referência do fabricante a partir da description
-        if not description:
-            raise DescriptionWarning(f"Produto {prod_id} sem description")
-
-        ref_raw = extract_ref_from_description(description)
-        if not ref_raw:
-            # Sem referência = produto não é útil para o comparador
-            continue
-
-        ref_norm, ref_parts = normalize_ref(ref_raw)
-        if not ref_norm or not ref_parts:
-            # Referência não pôde ser normalizada
-            continue
-
-        # Verificar refs duplicadas
-        if ref_norm in seen_refs:
-            pass
-        else:
-            seen_refs.add(ref_norm)
-
-        # Parse preço
+        product_id = id_elem.text.strip()
+        
+        # Título
+        title_elem = item.find('title') or item.find('g:title', ns)
+        title = title_elem.text.strip() if title_elem is not None else "Sem título"
+        
+        # Link
+        link_elem = item.find('link') or item.find('g:link', ns)
+        link = link_elem.text.strip() if link_elem is not None else ""
+        
+        # Preço
+        price_elem = item.find('g:price', ns)
+        price_text = price_elem.text.strip() if price_elem is not None else ""
         price_num = parse_price(price_text) if price_text else None
-
+        
+        # LÓGICA DE BUSCA DA REFERÊNCIA
+        # 1. Tentar g:mpn (mais confiável)
+        mpn_elem = item.find('g:mpn', ns)
+        ref_raw = None
+        
+        if mpn_elem is not None and mpn_elem.text:
+            ref_raw = mpn_elem.text.strip()
+        
+        # 2. Se não tem MPN, procurar na description
+        if not ref_raw:
+            desc_elem = item.find('g:description', ns) or item.find('description')
+            if desc_elem is not None and desc_elem.text:
+                ref_raw = extract_ref_from_description(desc_elem.text)
+        
+        # 3. Fallback: usar o ID
+        if not ref_raw:
+            ref_raw = product_id
+        
+        # Normalizar referência
+        ref_norm, ref_parts = normalize_reference(ref_raw)
+        
+        # Criar produto
         product = FeedProduct(
-            id=prod_id,
+            id=product_id,
             title=title,
             link=link,
             price_text=price_text,
             price_num=price_num,
             ref_raw=ref_raw,
             ref_norm=ref_norm,
-            ref_parts=ref_parts,
+            ref_parts=ref_parts
         )
         products.append(product)
-
-    if not products:
-        raise EmptyFeedError("Nenhum produto com referência válida foi encontrado no feed")
-
+    
     return products
 
 
 if __name__ == "__main__":
-    fp = FEED_PATH
-    if fp.exists():
-        try:
-            products = parse_feed(fp, max_products=20)
-            print(f"Total produtos lidos: {len(products)}")
-            print("\nPrimeiros produtos:")
-            for i, product in enumerate(products, 1):
-                print(f"{i}. {product}")
-            
-            print("\nEstatísticas:")
-            stats = feed_stats(products)
-            for key, value in stats.items():
-                print(f"  {key}: {value}")
-        
-        except Exception as e:
-            print(f"Erro: {e}")
-    else:
-        print(f"Feed não encontrado em: {FEED_PATH}")
-        print("(Normal se ainda não configuraste)")
+    # Teste do parser de preços Black Friday
+    test_prices = [
+        ("150,00 EUR", 150.0),
+        ("€ 1.234,56", 1234.56),
+        ("~~200,00€~~ 150,00€", 150.0),
+        ("De: 89.90 Por: 69.90", 69.90),
+        ("Antes 200€ - Agora 150€", 150.0),
+        ("Desde 45,00€", 45.0),
+        ("$1,234.56", 1234.56),
+        ("1 234,56 €", 1234.56),  # Espaço como separador de milhares
+    ]
+    
+    print("=== Teste Parser Preços Black Friday ===\n")
+    for price_str, expected in test_prices:
+        result = parse_price(price_str)
+        status = "✅" if result == expected else "❌"
+        print(f"{status} '{price_str}' → {result} (esperado: {expected})")

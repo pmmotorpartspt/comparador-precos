@@ -210,7 +210,7 @@ class ExcelBuilder:
             url_cell.alignment = Alignment(vertical="center")
             
             # Se tem URL, tornar hyperlink
-            if url_cell.value and url_cell.value.startswith("http"):
+            if url_cell.value and isinstance(url_cell.value, str) and url_cell.value.startswith("http"):
                 url_cell.hyperlink = url_cell.value
                 url_cell.font = Font(color="0563C1", underline="single")
                 url_cell.value = "🔗 Ver produto"

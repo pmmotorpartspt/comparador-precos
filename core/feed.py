@@ -274,8 +274,6 @@ def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List["Feed
 
         # Verificar IDs duplicados
         if prod_id in seen_ids:
-            # Apenas conta estatística, mas não falha
-            # (IDs duplicados podem existir em alguns feeds mal construídos)
             pass
         else:
             seen_ids.add(prod_id)
@@ -296,7 +294,6 @@ def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List["Feed
 
         # Verificar refs duplicadas
         if ref_norm in seen_refs:
-            # Não bloqueia, mas sinaliza
             pass
         else:
             seen_refs.add(ref_norm)
@@ -323,7 +320,6 @@ def parse_feed(feed_path: Path = FEED_PATH, max_products: int = 0) -> List["Feed
 
 
 if __name__ == "__main__":
-    # Pequeno teste manual quando corrido diretamente
     fp = FEED_PATH
     if fp.exists():
         try:

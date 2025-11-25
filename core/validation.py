@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 core/validation.py - Validação de produtos
+v4.9.2 - NOVA CORREÇÃO: Rejeita kits quando procura ref simples
 v4.9.1 - Corrigido fuzzy match para refs compostas
 """
 from dataclasses import dataclass
@@ -27,11 +28,21 @@ class ValidationResult:
 def validate_product_match(our_parts: List[str], page_identifiers: Dict[str, List[str]], page_url: str, page_text: str) -> ValidationResult:
     """
     Valida se produto corresponde à referência.
-    v4.9.1: Corrigido para não aplicar fuzzy match em refs compostas
+    
+    v4.9.2: NOVA CORREÇÃO CRÍTICA
+    - Se procuramos ref SIMPLES (ex: "110A26310")
+    - Mas página tem ref COMPOSTA (ex: "110A26310+110A26385" - kit)
+    - REJEITAR! Não queremos comparar preço individual com preço de kit
+    
+    v4.9.1: 
+    - Corrigido para não aplicar fuzzy match em refs compostas
     
     Args:
-        our_parts: Lista de partes da nossa ref ["ABC123DEF456", "ABC123", "DEF456"]
+        our_parts: Lista de partes da nossa ref 
+                   Simples: ["110A26310"]
+                   Composta: ["110A26310110A26385", "110A26310", "110A26385"]
         page_identifiers: Dict com SKUs e códigos extraídos da página
+                         Exemplo: {"sku": ["110A26310+110A26385"], "codes": [...]}
         page_url: URL da página
         page_text: Texto completo da página
         
@@ -44,8 +55,67 @@ def validate_product_match(our_parts: List[str], page_identifiers: Dict[str, Lis
     our_main_ref = our_parts[0]  # Ref completa concatenada
     is_composite = len(our_parts) > 2  # Se tem mais de 2 partes, é composta (ref completa + partes individuais)
     
+    # Normalizar identificadores da página
     page_skus = [norm_token(s) for s in page_identifiers.get("sku", [])]
     page_codes = [norm_token(c) for c in page_identifiers.get("codes", [])]
+    
+    # =========================================================================
+    # NOVA VALIDAÇÃO v4.9.2: REJEITAR KITS QUANDO PROCURAMOS REF SIMPLES
+    # =========================================================================
+    
+    if not is_composite:  # NÓS procuramos ref SIMPLES
+        # Verificar se página tem refs compostas (com +) que contenham a nossa ref
+        
+        # Verificar em CODES
+        for code in page_identifiers.get("codes", []):
+            if '+' in code:  # Página tem ref composta!
+                # Normalizar e split por +
+                code_norm = norm_token(code)
+                parts_in_page = [p.strip() for p in code_norm.split('+') if p.strip()]
+                
+                # Verificar se nossa ref está dentro desta composta
+                if our_main_ref in parts_in_page:
+                    # ENCONTRÁMOS A NOSSA REF MAS É PARTE DE KIT!
+                    return ValidationResult(
+                        False, 0.4, MatchType.PARTIAL_MATCH, [],
+                        f"Ref simples encontrada em kit {code} - rejeitado (não comparar peça com kit)"
+                    )
+        
+        # Verificar em SKUs
+        for sku in page_identifiers.get("sku", []):
+            if '+' in sku:  # SKU é composto (kit)
+                sku_norm = norm_token(sku)
+                parts_in_sku = [p.strip() for p in sku_norm.split('+') if p.strip()]
+                
+                if our_main_ref in parts_in_sku:
+                    # ENCONTRÁMOS A NOSSA REF MAS É PARTE DE KIT!
+                    return ValidationResult(
+                        False, 0.4, MatchType.PARTIAL_MATCH, [],
+                        f"Ref simples encontrada em kit SKU {sku} - rejeitado (não comparar peça com kit)"
+                    )
+        
+        # Verificar no URL (algumas lojas põem refs compostas no URL)
+        url_normalized = norm_token(page_url)
+        if '+' in page_url:  # URL tem +, pode ser ref composta
+            # Extrair possíveis refs compostas do URL
+            import re
+            # Padrão: algo+algo (refs compostas no URL)
+            composite_pattern = re.compile(r'([A-Z0-9]+\+[A-Z0-9]+)', re.I)
+            url_composites = composite_pattern.findall(page_url)
+            
+            for url_comp in url_composites:
+                url_comp_norm = norm_token(url_comp)
+                parts_in_url = [p.strip() for p in url_comp_norm.split('+') if p.strip()]
+                
+                if our_main_ref in parts_in_url:
+                    return ValidationResult(
+                        False, 0.4, MatchType.PARTIAL_MATCH, [],
+                        f"Ref simples encontrada em kit no URL {url_comp} - rejeitado"
+                    )
+    
+    # =========================================================================
+    # VALIDAÇÃO NORMAL (se passou o check acima)
+    # =========================================================================
     
     # 1. EXACT MATCH DO SKU (100%)
     if our_main_ref in page_skus:
@@ -154,59 +224,106 @@ def extract_codes_from_text(text: str, min_length: int = 4) -> List[str]:
 # ============================================================================
 
 if __name__ == "__main__":
-    print("=== Teste Validação v4.9.1 ===\n")
+    print("=" * 70)
+    print("TESTES DE VALIDAÇÃO v4.9.2")
+    print("=" * 70)
     
-    # Simular dados de página
-    page_identifiers = {
-        "sku": ["71821AKN", "OTHERSKU"],
-        "codes": ["71821AKN", "CODE123"]
-    }
-    page_url = "https://loja.com/product/71821akn"
-    page_text = "Produto 71821AKN disponível. Código: 71821AKN. Outros: 71821AKNXYZ"
-    
-    # Teste 1: Ref simples
-    print("Teste 1: Ref simples")
+    # Teste 1: Ref simples vs ref simples (deve aceitar)
+    print("\n🧪 TESTE 1: Ref simples encontra ref simples")
+    print("-" * 70)
     result = validate_product_match(
-        ["71821AKN"],
-        page_identifiers,
-        page_url,
-        page_text
+        our_parts=["110A26310"],  # Procuramos ref simples
+        page_identifiers={
+            "sku": ["110A26310"],  # Página tem ref simples
+            "codes": ["110A26310", "BREMBO", "RCS19"]
+        },
+        page_url="https://loja.com/brembo-110a26310",
+        page_text="Brembo 110A26310 RCS19"
     )
-    print(f"  Válido: {result.is_valid}, Confiança: {result.confidence:.2%}, Razão: {result.reason}\n")
+    print(f"Resultado: {'✅ ACEITA' if result.is_valid else '❌ REJEITA'}")
+    print(f"Confiança: {result.confidence:.2f}")
+    print(f"Tipo: {result.match_type.value}")
+    print(f"Razão: {result.reason}")
+    assert result.is_valid, "ERRO: Devia aceitar ref simples vs ref simples!"
     
-    # Teste 2: Ref composta - apenas primeira parte presente
-    print("Teste 2: Ref composta (71821AKN+71614MI) - só primeira parte")
+    # Teste 2: Ref simples vs kit (deve REJEITAR) - NOVO v4.9.2
+    print("\n🧪 TESTE 2: Ref simples encontra KIT (deve REJEITAR)")
+    print("-" * 70)
     result = validate_product_match(
-        ["71821AKN71614MI", "71821AKN", "71614MI"],  # Ref composta
-        page_identifiers,
-        page_url,
-        page_text
+        our_parts=["110A26310"],  # Procuramos ref simples (bomba só)
+        page_identifiers={
+            "sku": ["110A26310+110A26385"],  # Página tem KIT (bomba + reservatório)
+            "codes": ["110A26310+110A26385", "BREMBO", "KIT"]
+        },
+        page_url="https://loja.com/kit-110a26310-110a26385",
+        page_text="Kit Brembo 110A26310+110A26385"
     )
-    print(f"  Válido: {result.is_valid}, Confiança: {result.confidence:.2%}, Razão: {result.reason}")
-    print(f"  ✅ Correto: Deve ser FALSO (falta segunda parte)\n")
+    print(f"Resultado: {'✅ ACEITA' if result.is_valid else '❌ REJEITA'}")
+    print(f"Confiança: {result.confidence:.2f}")
+    print(f"Tipo: {result.match_type.value}")
+    print(f"Razão: {result.reason}")
+    assert not result.is_valid, "ERRO: Devia REJEITAR ref simples vs kit!"
     
-    # Teste 3: Ref composta - ambas partes presentes
-    page_identifiers_complete = {
-        "sku": ["71821AKN", "71614MI"],
-        "codes": []
-    }
-    print("Teste 3: Ref composta - ambas partes presentes")
+    # Teste 3: Ref composta vs ref composta completa (deve aceitar)
+    print("\n🧪 TESTE 3: Ref composta encontra ref composta completa")
+    print("-" * 70)
     result = validate_product_match(
-        ["71821AKN71614MI", "71821AKN", "71614MI"],
-        page_identifiers_complete,
-        page_url,
-        "Produto 71821AKN e 71614MI disponíveis"
+        our_parts=["110A26310110A26385", "110A26310", "110A26385"],  # Procuramos kit
+        page_identifiers={
+            "sku": ["110A26310+110A26385"],  # Página tem kit (ordem pode ser diferente)
+            "codes": ["110A26310", "110A26385", "KIT"]
+        },
+        page_url="https://loja.com/kit",
+        page_text="Kit 110A26310 e 110A26385"
     )
-    print(f"  Válido: {result.is_valid}, Confiança: {result.confidence:.2%}, Razão: {result.reason}")
-    print(f"  ✅ Correto: Deve ser VERDADEIRO (ambas partes presentes)\n")
+    print(f"Resultado: {'✅ ACEITA' if result.is_valid else '❌ REJEITA'}")
+    print(f"Confiança: {result.confidence:.2f}")
+    print(f"Tipo: {result.match_type.value}")
+    print(f"Razão: {result.reason}")
+    assert result.is_valid, "ERRO: Devia aceitar ref composta completa!"
     
-    # Teste 4: Fuzzy match não deve funcionar para compostas
-    print("Teste 4: Fuzzy match desativado para compostas")
+    # Teste 4: Ref composta vs ref parcial (deve REJEITAR)
+    print("\n🧪 TESTE 4: Ref composta encontra só UMA parte (deve REJEITAR)")
+    print("-" * 70)
     result = validate_product_match(
-        ["ABC123DEF456", "ABC123", "DEF456"],
-        {"sku": [], "codes": []},
-        "https://loja.com/product",
-        "Produto ABC123DEF456XYZ disponível"  # Similar mas não exato
+        our_parts=["110A26310110A26385", "110A26310", "110A26385"],  # Procuramos kit
+        page_identifiers={
+            "sku": ["110A26310"],  # Página tem só primeira parte
+            "codes": ["110A26310", "BREMBO"]
+        },
+        page_url="https://loja.com/110a26310",
+        page_text="Brembo 110A26310"
     )
-    print(f"  Válido: {result.is_valid}, Confiança: {result.confidence:.2%}, Razão: {result.reason}")
-    print(f"  ✅ Correto: Deve ser FALSO (fuzzy desativado para compostas)")
+    print(f"Resultado: {'✅ ACEITA' if result.is_valid else '❌ REJEITA'}")
+    print(f"Confiança: {result.confidence:.2f}")
+    print(f"Tipo: {result.match_type.value}")
+    print(f"Razão: {result.reason}")
+    assert not result.is_valid, "ERRO: Devia REJEITAR ref composta incompleta!"
+    
+    # Teste 5: Ref simples vs kit no URL (deve REJEITAR)
+    print("\n🧪 TESTE 5: Ref simples encontra kit no URL (deve REJEITAR)")
+    print("-" * 70)
+    result = validate_product_match(
+        our_parts=["110A26310"],  # Procuramos ref simples
+        page_identifiers={
+            "sku": [],
+            "codes": ["KIT", "BREMBO"]
+        },
+        page_url="https://loja.com/kit-110A26310+110A26385",  # Kit no URL
+        page_text="Kit Brembo"
+    )
+    print(f"Resultado: {'✅ ACEITA' if result.is_valid else '❌ REJEITA'}")
+    print(f"Confiança: {result.confidence:.2f}")
+    print(f"Tipo: {result.match_type.value}")
+    print(f"Razão: {result.reason}")
+    assert not result.is_valid, "ERRO: Devia REJEITAR kit no URL!"
+    
+    print("\n" + "=" * 70)
+    print("✅ ✅ ✅  TODOS OS TESTES PASSARAM!  ✅ ✅ ✅")
+    print("=" * 70)
+    print("\nv4.9.2 implementado com sucesso:")
+    print("  ✅ Rejeita kits quando procura ref simples")
+    print("  ✅ Aceita kits quando procura ref composta completa")
+    print("  ✅ Rejeita refs compostas incompletas")
+    print("  ✅ Detecta kits em SKU, codes e URL")
+    print("=" * 70)

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 core/feed.py
-Parser de feeds XML com lógica para busca automática de referência.
-v4.9.1 - Corrigido parser de preços para Black Friday
+Parser de feeds XML - v4.9.1 HOTFIX
+Corrigido: Mantém lógica original de extração da descrição + parser Black Friday
 """
 from pathlib import Path
 from typing import List, Optional, Union
@@ -25,6 +25,14 @@ class FeedProduct:
     ref_raw: str          # Referência original (com hífens/pontos)
     ref_norm: str         # Referência normalizada (sem caracteres especiais)
     ref_parts: List[str]  # Lista de partes para busca
+    
+    def is_simple(self) -> bool:
+        """Verifica se é ref simples (não composta)."""
+        return "+" not in self.ref_raw
+    
+    def is_composite(self) -> bool:
+        """Verifica se é ref composta (tem +)."""
+        return "+" in self.ref_raw
 
 
 def parse_price(price_text: str) -> Optional[float]:
@@ -150,100 +158,116 @@ def _parse_single_price(price_str: str) -> Optional[float]:
         return None
 
 
-def parse_feed(feed_path: Union[str, Path]) -> List[FeedProduct]:
+def parse_feed(feed_path: Union[str, Path], max_products: int = 0) -> List[FeedProduct]:
     """
-    Parse do feed.xml e extrai produtos com suas referências.
+    Parse do feed.xml e extrai produtos.
+    IMPORTANTE: Referências SEMPRE vêm da descrição (campo "Ref Fabricante:")
     
-    1. Tenta campo <g:mpn> (mais confiável)
-    2. Se não tem, procura no <g:description> por "Ref Fabricante: XXX"
-    3. Se não encontrar, usa <g:id> como fallback
+    Estrutura esperada do feed:
+        <item>
+            <g:id>12345</g:id>
+            <g:title>Nome do Produto</g:title>
+            <g:link>https://...</g:link>
+            <g:price>331.50 EUR</g:price>
+            <g:description>
+                Descrição...
+                Ref. Fabricante: H.085.LR1X
+                ...
+            </g:description>
+        </item>
     
     Args:
-        feed_path: Caminho do feed.xml ou string com conteúdo XML
+        feed_path: Caminho do ficheiro XML (Path ou str)
+        max_products: Limite de produtos (0 = sem limite, útil para testes)
         
     Returns:
-        Lista de FeedProduct com refs normalizadas
+        Lista de FeedProduct (só produtos COM ref válida)
     """
-    products = []
-    
-    # Se receber string, assumir que é conteúdo XML
-    if isinstance(feed_path, str) and feed_path.strip().startswith('<?xml'):
-        root = ET.fromstring(feed_path)
-    else:
-        # É um path
+    # Converter para Path se for string
+    if isinstance(feed_path, str):
         feed_path = Path(feed_path)
-        if not feed_path.exists():
-            print(f"[ERRO] Feed não encontrado: {feed_path}")
-            return products
-        
+    
+    if not feed_path.exists():
+        raise FileNotFoundError(f"Feed não encontrado: {feed_path}")
+    
+    # Namespace do Google Shopping
+    ns = {"g": "http://base.google.com/ns/1.0"}
+    
+    try:
         tree = ET.parse(feed_path)
         root = tree.getroot()
+    except Exception as e:
+        raise Exception(f"Erro ao parsear XML: {e}")
     
-    # Namespaces comuns em feeds do Google
-    ns = {
-        'g': 'http://base.google.com/ns/1.0',
-        'atom': 'http://www.w3.org/2005/Atom'
-    }
+    products = []
+    total_items = 0
+    skipped_no_ref = 0
+    skipped_invalid_ref = 0
     
-    # Procurar items/entry no feed
-    items = root.findall('.//item') or root.findall('.//entry', ns)
-    
-    for item in items:
-        # ID do produto
-        id_elem = item.find('g:id', ns) or item.find('id')
-        if id_elem is None:
+    # IMPORTANTE: Procurar SEMPRE por .//item (não .//entry)
+    for item in root.findall(".//item"):
+        total_items += 1
+        
+        # Extrair campos básicos
+        product_id = (item.findtext("g:id", "", ns) or "").strip()
+        title = (item.findtext("g:title", "", ns) or "").strip()
+        link = (item.findtext("g:link", "", ns) or "").strip()
+        price = (item.findtext("g:price", "", ns) or "").strip()
+        description = item.findtext("g:description", "", ns) or ""
+        
+        # SEMPRE extrair referência da DESCRIÇÃO (não de g:mpn)
+        # Procura por "Ref. Fabricante: XXX" ou "Ref Fabricante: XXX"
+        ref_raw = extract_ref_from_description(description)
+        
+        if not ref_raw:
+            skipped_no_ref += 1
             continue
-        product_id = id_elem.text.strip()
-        
-        # Título
-        title_elem = item.find('title') or item.find('g:title', ns)
-        title = title_elem.text.strip() if title_elem is not None else "Sem título"
-        
-        # Link
-        link_elem = item.find('link') or item.find('g:link', ns)
-        link = link_elem.text.strip() if link_elem is not None else ""
-        
-        # Preço
-        price_elem = item.find('g:price', ns)
-        price_text = price_elem.text.strip() if price_elem is not None else ""
-        price_num = parse_price(price_text) if price_text else None
-        
-        # LÓGICA DE BUSCA DA REFERÊNCIA
-        # 1. Tentar g:mpn (mais confiável)
-        mpn_elem = item.find('g:mpn', ns)
-        ref_raw = None
-        
-        if mpn_elem is not None and mpn_elem.text:
-            ref_raw = mpn_elem.text.strip()
-        
-        # 2. Se não tem MPN, procurar na description
-        if not ref_raw:
-            desc_elem = item.find('g:description', ns) or item.find('description')
-            if desc_elem is not None and desc_elem.text:
-                ref_raw = extract_ref_from_description(desc_elem.text)
-        
-        # 3. Fallback: usar o ID
-        if not ref_raw:
-            ref_raw = product_id
         
         # Normalizar referência
         ref_norm, ref_parts = normalize_reference(ref_raw)
+        
+        if not ref_norm:
+            skipped_invalid_ref += 1
+            continue
+        
+        # Parse do preço (com suporte Black Friday)
+        price_num = parse_price(price) if price else None
         
         # Criar produto
         product = FeedProduct(
             id=product_id,
             title=title,
             link=link,
-            price_text=price_text,
+            price_text=price,
             price_num=price_num,
             ref_raw=ref_raw,
             ref_norm=ref_norm,
             ref_parts=ref_parts
         )
+        
         products.append(product)
+        
+        # Limite (se especificado)
+        if max_products > 0 and len(products) >= max_products:
+            break
+    
+    # Log resumo
+    print(f"[FEED] Total de itens no XML: {total_items}")
+    print(f"[FEED] Sem referência: {skipped_no_ref}")
+    print(f"[FEED] Ref inválida: {skipped_invalid_ref}")
+    print(f"[FEED] Produtos válidos: {len(products)}")
+    
+    if products:
+        simple = sum(1 for p in products if p.is_simple())
+        composite = len(products) - simple
+        print(f"[FEED]   → Simples: {simple}, Compostas: {composite}")
     
     return products
 
+
+# ============================================================================
+# TESTES
+# ============================================================================
 
 if __name__ == "__main__":
     # Teste do parser de preços Black Friday

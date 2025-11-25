@@ -245,7 +245,7 @@ class JBSMotosScraper(BaseScraper):
         if title_tag:
             title = title_tag.get_text(strip=True)
             # Extrair códigos alfanuméricos do título
-            pattern = re.compile(r"\b([A-Z0-9][\w\-\.]{2,})\b", re.I)
+            pattern = re.compile(r"\b([A-Z0-9][\w\-\.+]{2,})\b", re.I)
             for match in pattern.finditer(title):
                 code = match.group(1).upper()
                 from core.normalization import norm_token
@@ -256,7 +256,7 @@ class JBSMotosScraper(BaseScraper):
         meta_desc = soup.find("meta", attrs={"name": "description"})
         if meta_desc:
             content = meta_desc.get("content", "")
-            pattern = re.compile(r"\b([A-Z0-9][\w\-\.]{3,})\b", re.I)
+            pattern = re.compile(r"\b([A-Z0-9][\w\-\.+]{3,})\b", re.I)
             for match in pattern.finditer(content):
                 code = match.group(1).upper()
                 from core.normalization import norm_token
